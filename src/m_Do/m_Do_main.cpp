@@ -60,6 +60,7 @@
 #include "SDL3/SDL_filesystem.h"
 #include "cxxopts.hpp"
 #include "dusk/config.hpp"
+#include "tracy/Tracy.hpp"
 
 #if RANDOMIZER_ONLY
 #include "dusk/randomizer/randomizer.hpp"
@@ -203,6 +204,8 @@ void main01(void) {
         mDoAud_Execute();
 
         aurora_end_frame();
+
+        FrameMark;
     } while (true);
 
     exit:;
