@@ -61,7 +61,9 @@
 
 #include "SDL3/SDL_filesystem.h"
 #include "cxxopts.hpp"
+#include "dusk/audio/DuskAudioSystem.h"
 #include "dusk/config.hpp"
+#include "dusk/imgui/ImGuiConsole.hpp"
 #include "tracy/Tracy.hpp"
 
 #if RANDOMIZER_ONLY
@@ -87,7 +89,9 @@ const int audioHeapSize = 0x14D800;
 #define COPYDATE_PATH "/str/Final/Release/COPYDATE"
 
 #if TARGET_PC
+bool dusk::IsRunning = true;
 bool dusk::IsShuttingDown = false;
+bool dusk::IsGameLaunched = false;
 #endif
 
 s32 LOAD_COPYDATE(void*) {
@@ -121,6 +125,41 @@ AuroraInfo auroraInfo;
 AuroraStats dusk::lastFrameAuroraStats;
 float dusk::frameUsagePct = 0.0f;
 const char* configPath;
+
+AuroraWindowSize preLaunchUIWindowSize;
+
+bool launchUILoop() {
+    while (dusk::IsRunning && !dusk::IsGameLaunched) {
+        const AuroraEvent* event = aurora_update();
+        while (event != nullptr && event->type != AURORA_NONE) {
+            switch (event->type) {
+            case AURORA_WINDOW_RESIZED:
+                preLaunchUIWindowSize = event->windowSize;
+                break;
+            case AURORA_DISPLAY_SCALE_CHANGED:
+                dusk::ImGuiEngine_Initialize(event->windowSize.scale);
+                break;
+            case AURORA_EXIT:
+                return false;
+            }
+
+            event++;
+        }
+
+        if (!aurora_begin_frame()) {
+            DuskLog.debug("aurora_begin_frame returned false, skipping draw this frame");
+            continue;
+        }
+
+        dusk::g_imguiConsole.PreDraw();
+
+        dusk::g_imguiConsole.PostDraw();
+
+        aurora_end_frame();
+    }
+
+    return dusk::IsRunning;
+}
 
 void main01(void) {
     OS_REPORT("\x1b[m");
@@ -160,6 +199,8 @@ void main01(void) {
 
     OSReport("Entering Main Loop (main01)...\n");
 
+    if (preLaunchUIWindowSize.width != 0)
+        mDoGph_gInf_c::setWindowSize(preLaunchUIWindowSize);
 
     do {
         // 1. Update Window Events
@@ -208,46 +249,57 @@ void main01(void) {
         aurora_end_frame();
 
         FrameMark;
-    } while (true);
+    } while (dusk::IsRunning);
 
     exit:;
 }
 
-static AuroraBackend ParseAuroraBackend(const std::string& value) {
-    if (value == "auto") {
-        return BACKEND_AUTO;
-    }
-    if (value == "d3d11") {
-        return BACKEND_D3D11;
-    }
-    if (value == "d3d12") {
-        return BACKEND_D3D12;
-    }
-    if (value == "metal") {
-        return BACKEND_METAL;
-    }
-    if (value == "vulkan") {
-        return BACKEND_VULKAN;
-    }
-    if (value == "opengl") {
-        return BACKEND_OPENGL;
-    }
-    if (value == "opengles") {
-        return BACKEND_OPENGLES;
-    }
-    if (value == "webgpu") {
-        return BACKEND_WEBGPU;
-    }
-    if (value == "null") {
-        return BACKEND_NULL;
+static bool IsBackendAvailable(AuroraBackend backend) {
+    if (backend == BACKEND_AUTO) {
+        return true;
     }
 
-    fmt::print(stderr, "Unknown backend: {}", value);
-    exit(1);
+    size_t availableBackendCount = 0;
+    const AuroraBackend* availableBackends = aurora_get_available_backends(&availableBackendCount);
+    for (size_t i = 0; i < availableBackendCount; ++i) {
+        if (availableBackends[i] == backend) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static AuroraBackend ResolveDesiredBackend(const cxxopts::ParseResult& parsedArgOptions) {
+    AuroraBackend desiredBackend = BACKEND_AUTO;
+
+    if (parsedArgOptions.count("backend") != 0) {
+        const std::string backendArg = parsedArgOptions["backend"].as<std::string>();
+        if (!dusk::try_parse_backend(backendArg, desiredBackend)) {
+            fmt::print(stderr, "Unknown backend: {}\n", backendArg);
+            exit(1);
+        }
+    } else if (!dusk::try_parse_backend(
+                   static_cast<const std::string&>(dusk::getSettings().backend.graphicsBackend),
+                   desiredBackend))
+    {
+        DuskLog.warn("Unknown configured backend '{}', falling back to Auto",
+                     static_cast<const std::string&>(dusk::getSettings().backend.graphicsBackend));
+        desiredBackend = BACKEND_AUTO;
+    }
+
+    if (!IsBackendAvailable(desiredBackend)) {
+        DuskLog.warn("Requested backend '{}' is unavailable, falling back to Auto",
+                     dusk::backend_name(desiredBackend));
+        desiredBackend = BACKEND_AUTO;
+    }
+
+    return desiredBackend;
 }
 
 static void aurora_imgui_init_callback(const AuroraWindowSize* size) {
     dusk::ImGuiEngine_Initialize(size->scale);
+    dusk::ImGuiEngine_AddTextures();
 }
 
 static void ApplyCVarOverrides(const cxxopts::OptionValue& option) {
@@ -346,7 +398,7 @@ int game_main(int argc, char* argv[]) {
             ("l,log-level", "Log level from " + std::to_string(AuroraLogLevel::LOG_DEBUG) + " to " + std::to_string(AuroraLogLevel::LOG_FATAL), cxxopts::value<uint8_t>()->default_value("0"))
             ("h,help", "Print usage")
             ("dvd", "Path to DVD image file", cxxopts::value<std::string>()->default_value("game.iso"))
-            ("backend", "Graphics API backend to use (auto, d3d11, d3d12, metal, vulkan, opengl, opengles, webgpu, null)", cxxopts::value<std::string>()->default_value("auto"))
+            ("backend", "Graphics API backend to use (auto, d3d12, metal, vulkan, null)", cxxopts::value<std::string>())
             ("cvar", "Override configuration variables without modifying config", cxxopts::value<std::vector<std::string>>());
 
         arg_options.parse_positional({"dvd"});
@@ -380,7 +432,7 @@ int game_main(int argc, char* argv[]) {
     config.windowPosY = -1;
     config.windowWidth = defaultWindowWidth * 2;
     config.windowHeight = defaultWindowHeight * 2;
-    config.desiredBackend = ParseAuroraBackend(parsed_arg_options["backend"].as<std::string>());
+    config.desiredBackend = ResolveDesiredBackend(parsed_arg_options);
     config.logCallback = &aurora_log_callback;
     config.logLevel = (AuroraLogLevel)parsed_arg_options["log-level"].as<uint8_t>();
     config.mem1Size = 256 * 1024 * 1024;
@@ -394,9 +446,33 @@ int game_main(int argc, char* argv[]) {
 
     VISetWindowTitle(
         fmt::format("Dusk {} [{}]", DUSK_WC_DESCRIBE, dusk::backend_name(auroraInfo.backend))
-            .c_str());
+        .c_str());
 
-    const auto& dvd_path = parsed_arg_options["dvd"].as<std::string>();
+    if (dusk::getSettings().video.lockAspectRatio) {
+        VILockAspectRatio(defaultAspectRatioW, defaultAspectRatioH);
+    } else {
+        VIUnlockAspectRatio();
+    }
+
+    dusk::audio::SetMasterVolume(dusk::getSettings().audio.masterVolume / 100.0f);
+    dusk::audio::SetEnableReverb(dusk::getSettings().audio.enableReverb);
+
+    // pre game launch ui main loop
+    if (!launchUILoop()) {
+        aurora_shutdown();
+        return 0;
+    }
+
+    std::string dvd_path;
+    if (parsed_arg_options.count("dvd")) {
+        dvd_path = parsed_arg_options["dvd"].as<std::string>();
+    } else {
+        dvd_path = dusk::getSettings().backend.isoPath;
+
+        if (dvd_path.empty()) {
+            DuskLog.fatal("No DVD image specified, unable to boot!");
+        }
+    }
     DuskLog.info("Loading DVD image: {}", dvd_path);
     if (!aurora_dvd_open(dvd_path.c_str())) {
         DuskLog.fatal("Failed to open DVD image: {}", dvd_path);

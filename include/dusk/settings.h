@@ -70,6 +70,12 @@ struct UserSettings {
         // Controls
         ConfigVar<bool> enableTurboKeybind;
     } game;
+
+    struct {
+        ConfigVar<std::string> isoPath;
+        ConfigVar<std::string> graphicsBackend;
+        ConfigVar<bool> skipPreLaunchUI;
+    } backend;
 };
 
 UserSettings& getSettings();
