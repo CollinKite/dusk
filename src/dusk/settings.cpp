@@ -47,10 +47,11 @@ UserSettings g_userSettings = {
         // Graphics
         .bloomMode {"game.bloomMode", BloomMode::Classic},
         .bloomMultiplier {"game.bloomMultiplier", 1.0f},
-        .enableWaterRefraction {"game.enableWaterRefraction", true},
+        .disableWaterRefraction {"game.disableWaterRefraction", false},
         .enableFrameInterpolation = {"game.enableFrameInterpolation", false},
         .internalResolutionScale {"game.internalResolutionScale", 0},
         .shadowResolutionMultiplier {"game.shadowResolutionMultiplier", 1},
+        .enableDepthOfField {"game.enableDepthOfField", true},
 
         // Audio
         .noLowHpSound {"game.noLowHpSound", false},
@@ -74,6 +75,7 @@ UserSettings g_userSettings = {
         .infiniteOil{"game.infiniteOil", false},
         .infiniteOxygen{"game.infiniteOxygen", false},
         .infiniteRupees{"game.infiniteRupees", false},
+        .enableIndefiniteItemDrops {"game.enableIndefiniteItemDrops", false},
         .moonJump{"game.moonJump", false},
         .superClawshot{"game.superClawshot", false},
         .alwaysGreatspin{"game.alwaysGreatspin", false},
@@ -140,9 +142,10 @@ void registerSettings() {
     Register(g_userSettings.game.pauseOnFocusLost);
     Register(g_userSettings.game.bloomMode);
     Register(g_userSettings.game.bloomMultiplier);
-    Register(g_userSettings.game.enableWaterRefraction);
+    Register(g_userSettings.game.disableWaterRefraction);
     Register(g_userSettings.game.internalResolutionScale);
     Register(g_userSettings.game.shadowResolutionMultiplier);
+    Register(g_userSettings.game.enableDepthOfField);
     Register(g_userSettings.game.enableFastIronBoots);
     Register(g_userSettings.game.canTransformAnywhere);
     Register(g_userSettings.game.freeMagicArmor);
@@ -158,6 +161,7 @@ void registerSettings() {
     Register(g_userSettings.game.infiniteOil);
     Register(g_userSettings.game.infiniteOxygen);
     Register(g_userSettings.game.infiniteRupees);
+    Register(g_userSettings.game.enableIndefiniteItemDrops);
     Register(g_userSettings.game.moonJump);
     Register(g_userSettings.game.superClawshot);
     Register(g_userSettings.game.alwaysGreatspin);

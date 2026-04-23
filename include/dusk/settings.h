@@ -73,10 +73,11 @@ struct UserSettings {
         // Graphics
         ConfigVar<BloomMode> bloomMode;
         ConfigVar<float> bloomMultiplier;
-        ConfigVar<bool> enableWaterRefraction;
+        ConfigVar<bool> disableWaterRefraction;
         ConfigVar<bool> enableFrameInterpolation;
         ConfigVar<int> internalResolutionScale;
         ConfigVar<int> shadowResolutionMultiplier;
+        ConfigVar<bool> enableDepthOfField;
 
         // Audio
         ConfigVar<bool> noLowHpSound;
@@ -100,6 +101,7 @@ struct UserSettings {
         ConfigVar<bool> infiniteOil;
         ConfigVar<bool> infiniteOxygen;
         ConfigVar<bool> infiniteRupees;
+        ConfigVar<bool> enableIndefiniteItemDrops;
         ConfigVar<bool> moonJump;
         ConfigVar<bool> superClawshot;
         ConfigVar<bool> alwaysGreatspin;
@@ -147,6 +149,7 @@ struct TransientSettings {
     CollisionViewSettings collisionView;
     bool skipFrameRateLimit;
     bool moveLinkActive;
+    bool stateShareLoadActive;
 };
 
 TransientSettings& getTransientSettings();

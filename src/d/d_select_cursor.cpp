@@ -69,6 +69,9 @@ dSelect_cursor_c::dSelect_cursor_c(u8 param_0, f32 param_1, JKRArchive* param_2)
         field_0x84[i] = 0.0f;
     }
     mParam1 = mpCursorHIO->mXAxisExpansion;
+#ifdef TARGET_PC
+    mBaseParam1 = mParam1;
+#endif
     mParam2 = mpCursorHIO->mYAxisExpansion;
     mParam3 = mpCursorHIO->mOscillation;
     mParam4 = mpCursorHIO->mRatioX;
@@ -259,6 +262,13 @@ void dSelect_cursor_c::update() {
     if (field_0xb6 == 3) {
         fVar1 = 0.5f;
     }
+#ifdef TARGET_PC
+    if (mpPane) {
+        Vec pos = mpPaneMgr->getGlobalVtxCenter(mpPane, false, 0);
+        mPositionX = pos.x;
+        mPositionY = pos.y;
+    }
+#endif
     mpPaneMgr->translate(mPositionX, mPositionY);
     if (mpCursorHIO->mDebugON) {
         mParam1 = mpCursorHIO->mXAxisExpansion;
@@ -404,6 +414,9 @@ void dSelect_cursor_c::setPos(f32 i_posX, f32 i_posY, J2DPane* i_pane, bool i_sc
 void dSelect_cursor_c::setParam(f32 i_param1, f32 i_param2, f32 i_param3, f32 i_param4,
                                     f32 i_param5) {
     mParam1 = i_param1;
+#ifdef TARGET_PC
+    mBaseParam1 = i_param1;
+#endif
     mParam2 = i_param2;
     mParam3 = i_param3;
     mParam4 = i_param4;
@@ -562,3 +575,9 @@ void dSelect_cursor_c::setBckAnimation(J2DAnmTransformKey* param_0) {
 void dSelect_cursor_c::moveCenter(J2DPane* i_pane, f32 i_x, f32 i_y) {
     i_pane->translate(i_x,i_y);
 }
+
+#ifdef TARGET_PC
+void dSelect_cursor_c::refreshAspectScale() {
+    mParam1 = mBaseParam1 * mDoGph_gInf_c::hudAspectScaleUp;
+}
+#endif

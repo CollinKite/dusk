@@ -76,9 +76,9 @@ All fields are optional but recommended. `name` falls back to the filename, `ver
 
 extern "C" {
 
-void mod_init   (DuskModAPI* api);  // required — called once at startup
-void mod_tick   (DuskModAPI* api);  // required — called every frame
-void mod_cleanup(DuskModAPI* api);  // optional — called on shutdown
+void mod_init   (DuskModAPI* api);  // required, called once at startup
+void mod_tick   (DuskModAPI* api);  // required, called every frame
+void mod_cleanup(DuskModAPI* api);  // optional, called on shutdown
 
 }
 ```

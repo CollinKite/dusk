@@ -432,12 +432,6 @@ target_include_directories(game_base PRIVATE ${GAME_INCLUDE_DIRS})
 target_link_libraries(game_debug PRIVATE ${GAME_LIBS})
 target_link_libraries(game_base PRIVATE ${GAME_LIBS})
 
-# Combined game library
-add_library(game STATIC
-    $<TARGET_OBJECTS:game_base>
-    $<TARGET_OBJECTS:game_debug>)
-target_link_libraries(game PUBLIC ${GAME_LIBS})
-
 if(ANDROID)
     add_library(dusk SHARED src/dusk/main.cpp)
     set_target_properties(dusk PROPERTIES OUTPUT_NAME main)
