@@ -86,8 +86,8 @@ public:
     /* 0x047 */ u8 field_0x47;
     /* 0x048 */ u8 mPoes;
     /* 0x049 */ u8 mPoesCopy;
-    /* 0x04A */ u8 mItems[24];
-    /* 0x062 */ u8 mItemsCopy[24];
+    /* 0x04A */ u8 mItems[25];
+    /* 0x062 */ u8 mItemsCopy[25];
     /* 0x07A */ u8 field_0x7a[24];
     /* 0x092 */ u8 mSwords[4];
     /* 0x096 */ u8 mShields[3];

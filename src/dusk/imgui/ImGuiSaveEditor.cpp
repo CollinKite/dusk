@@ -251,7 +251,7 @@ namespace dusk {
         { dItemNo_NOENTRY_222_e, {"Reserved"} },
         { dItemNo_NOENTRY_223_e, {"Reserved"} },
         { dItemNo_POU_SPIRIT_e, {"Poe Soul"} },
-        { dItemNo_NOENTRY_225_e, {"Reserved"} },
+        { dItemNo_LENS_OF_TRUTH_e, {"Lens of Truth", ITEMTYPE_EQUIP_e} },
         { dItemNo_NOENTRY_226_e, {"Reserved"} },
         { dItemNo_NOENTRY_227_e, {"Reserved"} },
         { dItemNo_NOENTRY_228_e, {"Reserved"} },
@@ -408,6 +408,7 @@ namespace dusk {
         { SLOT_21, dItemNo_HORSE_FLUTE_e  },
         { SLOT_22, dItemNo_ANCIENT_DOCUMENT_e },
         { SLOT_23, dItemNo_PACHINKO_e     },
+        { SLOT_24, dItemNo_LENS_OF_TRUTH_e},
     };
 
     ImGuiSaveEditor::ImGuiSaveEditor() {}
@@ -533,7 +534,7 @@ namespace dusk {
                 selectItemData = 0xFF;
             }
 
-            for (int i = 0; i < 24; i++) {
+            for (int i = 0; i < 25; i++) {
                 u8 itemNo = item.mItems[i];
                 if (ImGui::Selectable(fmt::format("Slot {0} ({1})", i, itemMap.find(itemNo)->second.m_name).c_str())) {
                     selectItemData = i;
@@ -820,19 +821,19 @@ namespace dusk {
 
         if (ImGui::TreeNode("Item Wheel")) {
             if (ImGui::Button("Default All##inv_default_all")) {
-                for (int slot = 0; slot < 24; slot++) {
+                for (int slot = 0; slot < 25; slot++) {
                     dComIfGs_setItem(slot, getSlotDefault(slot));
                 }
             }
             ImGui::SameLine();
             if (ImGui::Button("Clear All##inv_clear_all")) {
-                for (int slot = 0; slot < 24; slot++) {
+                for (int slot = 0; slot < 25; slot++) {
                     dComIfGs_setItem(slot, dItemNo_NONE_e);
                 }
             }
 
             ImGuiBeginGroupPanel("Items", { 200, 100 });
-            for (int slot = 0; slot < 24; slot++) {
+            for (int slot = 0; slot < 25; slot++) {
                 ImGui::Text("Slot %02d (%s): ", slot, itemMap.find(getSlotDefault(slot))->second.m_name.c_str());
                 ImGui::SameLine(240.0f);
                 if (ImGui::BeginCombo(fmt::format("##ItemComboBox{}", slot).c_str(), itemMap.find(item.mItems[slot])->second.m_name.c_str())) {

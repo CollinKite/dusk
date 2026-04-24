@@ -14480,7 +14480,16 @@ enum daAlink_ItemProc {
     /* 13 */ ITEM_PROC_BOTTLE_SWING,
     /* 14 */ ITEM_PROC_NOT_USE_ITEM,
     /* 15 */ ITEM_PROC_GRASS_WHISTLE,
+    /* 16 */ ITEM_PROC_LENS_OF_TRUTH,
 };
+
+void daAlink_c::procLensOfTruthOn() {
+    if (!checkWolfEyeUp()) {
+        onWolfEyeUp();
+    } else {
+        offWolfEyeUp();
+    }
+}
 
 int daAlink_c::changeItemTriggerKeepProc(u8 i_selItemIdx, int i_procType) {
     u32 sel_item = dComIfGp_getSelectItem(i_selItemIdx);
@@ -14504,6 +14513,9 @@ int daAlink_c::changeItemTriggerKeepProc(u8 i_selItemIdx, int i_procType) {
         } else {
             procKandelaarPourInit();
         }
+    }
+    else if (i_procType == ITEM_PROC_LENS_OF_TRUTH) {
+        procLensOfTruthOn();
     } else if (i_procType == ITEM_PROC_FISHING_FOOD) {
         procFishingFoodInit();
     } else if (i_procType == ITEM_PROC_BOOTS_EQUIP) {
@@ -14572,6 +14584,8 @@ int daAlink_c::checkNewItemChange(u8 i_selItemIdx) {
         )
     {
         return ITEM_PROC_NONE;
+    } else if (sel_item == dItemNo_LENS_OF_TRUTH_e) {
+        return ITEM_PROC_LENS_OF_TRUTH;
     } else if (sel_item == dItemNo_HVY_BOOTS_e
                 || checkDungeonWarpItem(sel_item)
                 || checkTradeItem(sel_item)

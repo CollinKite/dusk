@@ -2383,6 +2383,7 @@ public:
     void setGroundFishingRodActor();
     int procFishingCastInit();
     int procFishingCast();
+    void procLensOfTruthOn();
     int procFishingFoodInit();
     int procFishingFood();
     f32 getCrawlMoveAnmSpeed();
