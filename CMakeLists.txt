@@ -90,6 +90,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
+# Folder-based instead of target-based organization
+# in Visual Studio and Xcode generators
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "_cmake")
+
 if (CMAKE_SYSTEM_NAME STREQUAL Linux)
   set(DAWN_USE_WAYLAND ON CACHE BOOL "Enable support for Wayland surface" FORCE)
 endif ()
@@ -305,7 +310,7 @@ set(DUSK_TP_VERSION ${DUSK_GAME_NAME}${DUSK_GAME_VERSION})
 
 message(STATUS "dusk: Game Version: ${DUSK_TP_VERSION}")
 
-source_group("dolzel" FILES ${DOLZEL_FILES} ${Z2AUDIOLIB_FILES} ${JSYSTEM_FILES} ${JSYSTEM_DEBUG_FILES} ${REL_FILES})
+source_group("dolzel" FILES ${DOLZEL_FILES} ${Z2AUDIOLIB_FILES} ${REL_FILES})
 source_group("dusk" FILES ${DUSK_FILES})
 
 set(GAME_COMPILE_DEFS TARGET_PC WIDESCREEN_SUPPORT=1 AVOID_UB=1 VERSION=0
@@ -406,71 +411,89 @@ endif ()
 
 # game_debug is for game code files that we know work when compiled with DEBUG=1
 # Of course, if building a release build, this distinction is irrelevant
-add_library(game_debug OBJECT ${JSYSTEM_DEBUG_FILES} ${SSYSTEM_FILES}
+set(GAME_DEBUG_FILES
+        ${SSYSTEM_FILES}
         src/dusk/audio/DuskAudioSystem.cpp
         src/dusk/audio/JASCriticalSection.cpp
         src/dusk/audio/DuskDsp.cpp
         src/dusk/audio/Adpcm.cpp
         src/dusk/audio/DspStub.cpp
-        src/dusk/imgui/ImGuiAudio.cpp)
+        src/dusk/imgui/ImGuiAudio.cpp
+)
+set_source_files_properties(
+        ${GAME_DEBUG_FILES}
+        PROPERTIES
+        COMPILE_DEFINITIONS "$<$<CONFIG:Debug>:DEBUG=1>;$<$<CONFIG:Debug>:PARTIAL_DEBUG=1>"
+)
 
-# game_base is for all other game code files
-add_library(game_base OBJECT ${DOLZEL_FILES} ${Z2AUDIOLIB_FILES} ${JSYSTEM_FILES} ${REL_FILES} ${DUSK_FILES} ${DOLPHIN_FILES}
-    ${miniz_SOURCE_DIR}/miniz.c)
+set(GAME_BASE_FILES
+        ${DOLZEL_FILES}
+        ${Z2AUDIOLIB_FILES}
+        ${REL_FILES}
+        ${DUSK_FILES}
+        ${DOLPHIN_FILES}
+)
+set_source_files_properties(
+        ${GAME_BASE_FILES}
+        PROPERTIES
+        COMPILE_DEFINITIONS "NDEBUG=1;NDEBUG_DEFINED=1;DEBUG_DEFINED=0;$<$<CONFIG:Debug>:PARTIAL_DEBUG=1>"
+)
 
-target_compile_definitions(game_debug PRIVATE ${GAME_COMPILE_DEFS} DUSK_BUILDING_GAME=1 $<$<CONFIG:Debug>:DEBUG=1> $<$<CONFIG:Debug>:PARTIAL_DEBUG=1>)
-target_compile_definitions(game_base PRIVATE ${GAME_COMPILE_DEFS} DUSK_BUILDING_GAME=1 NDEBUG=1 NDEBUG_DEFINED=1 DEBUG_DEFINED=0 $<$<CONFIG:Debug>:PARTIAL_DEBUG=1>)
+foreach(jsystem_lib IN LISTS JSYSTEM_LIBRARIES)
+    target_compile_definitions(${jsystem_lib} PRIVATE
+            ${GAME_COMPILE_DEFS}
+            $<$<CONFIG:Debug>:DEBUG=1>
+            $<$<CONFIG:Debug>:PARTIAL_DEBUG=1>
+    )
+    target_include_directories(${jsystem_lib} PRIVATE ${GAME_INCLUDE_DIRS})
+    target_link_libraries(${jsystem_lib} PRIVATE ${GAME_LIBS})
+    set_target_properties(${jsystem_lib} PROPERTIES FOLDER "JSystem")
+endforeach()
 
-# only apply PCH to game_base since not all headers are necessarily validated with DEBUG=1
-target_precompile_headers(game_base PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/include/dusk_pch.hpp>")
+set(JSYSTEM_LINK_LIBRARIES ${JSYSTEM_LIBRARIES})
+if (CMAKE_CXX_LINK_GROUP_USING_RESCAN_SUPPORTED OR CMAKE_LINK_GROUP_USING_RESCAN_SUPPORTED)
+    # GNU ld resolves static archives in a single left-to-right pass. The split
+    # JSystem libraries reference each other, so they need a RESCAN group there.
+    set(JSYSTEM_LINK_LIBRARIES "$<LINK_GROUP:RESCAN,${JSYSTEM_LIBRARIES}>")
+endif ()
 
-target_include_directories(game_debug PRIVATE ${GAME_INCLUDE_DIRS})
-target_include_directories(game_base PRIVATE ${GAME_INCLUDE_DIRS})
-
-# This implicitly pulls in the library include directories even though no
-# linking actually takes place for object libraries
-target_link_libraries(game_debug PRIVATE ${GAME_LIBS})
-target_link_libraries(game_base PRIVATE ${GAME_LIBS})
-
+set(DUSK_FILES src/dusk/main.cpp ${GAME_BASE_FILES} ${GAME_DEBUG_FILES} ${miniz_SOURCE_DIR}/miniz.c)
 if(ANDROID)
-    add_library(dusk SHARED src/dusk/main.cpp)
+    add_library(dusk SHARED ${DUSK_FILES})
     set_target_properties(dusk PROPERTIES OUTPUT_NAME main)
     set(DUSK_MAIN_TARGET dusk)
 elseif(WIN32)
-    # Game DLL: mods link against dusk.lib. TARGET_OBJECTS lets WINDOWS_EXPORT_ALL_SYMBOLS see and export all game symbols
-    add_library(dusk_game SHARED
-        src/dusk/main.cpp
-        $<TARGET_OBJECTS:game_base>
-        $<TARGET_OBJECTS:game_debug>)
+    add_library(dusk_game SHARED ${DUSK_FILES})
     set_target_properties(dusk_game PROPERTIES
-        WINDOWS_EXPORT_ALL_SYMBOLS ON
-        OUTPUT_NAME dusk)
+            WINDOWS_EXPORT_ALL_SYMBOLS ON
+            OUTPUT_NAME dusk)
 
-    # Launcher EXE
     add_executable(dusk WIN32 src/dusk/launcher_win32.cpp)
     target_link_libraries(dusk PRIVATE dusk_game)
     target_include_directories(dusk PRIVATE include)
     set(DUSK_MAIN_TARGET dusk_game)
-else()
-    add_executable(dusk src/dusk/main.cpp)
+else ()
+    add_executable(dusk ${DUSK_FILES})
     set(DUSK_MAIN_TARGET dusk)
-endif()
+endif ()
 
-target_compile_definitions(${DUSK_MAIN_TARGET} PRIVATE TARGET_PC AVOID_UB=1 VERSION=0)
-target_include_directories(${DUSK_MAIN_TARGET} PRIVATE include)
-# Windows uses TARGET_OBJECTS directly so link GAME_LIBS instead of the static wrapper.
+target_compile_definitions(${DUSK_MAIN_TARGET} PRIVATE ${GAME_COMPILE_DEFS})
+target_include_directories(${DUSK_MAIN_TARGET} PRIVATE ${GAME_INCLUDE_DIRS})
+target_link_libraries(${DUSK_MAIN_TARGET} PRIVATE aurora::main ${GAME_LIBS} ${JSYSTEM_LINK_LIBRARIES})
+target_precompile_headers(${DUSK_MAIN_TARGET} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_SOURCE_DIR}/include/dusk_pch.hpp>")
+
 if(WIN32)
-    target_link_libraries(${DUSK_MAIN_TARGET} PRIVATE ${GAME_LIBS} aurora::main Psapi)
-else()
-    target_link_libraries(${DUSK_MAIN_TARGET} PRIVATE game aurora::main)
+    target_link_libraries(${DUSK_MAIN_TARGET} PRIVATE Psapi)
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL Linux)
     target_link_libraries(${DUSK_MAIN_TARGET} PRIVATE dl)
 endif()
-# -rdynamic lets mods call game functions directly
-if(UNIX AND NOT ANDROID)
+if(APPLE)
+    target_link_options(${DUSK_MAIN_TARGET} PRIVATE -Wl,-export_dynamic)
+elseif(UNIX AND NOT ANDROID)
     target_link_options(${DUSK_MAIN_TARGET} PRIVATE -rdynamic)
 endif()
+
 if (TARGET crashpad_handler)
     add_dependencies(${DUSK_MAIN_TARGET} crashpad_handler)
 endif ()
