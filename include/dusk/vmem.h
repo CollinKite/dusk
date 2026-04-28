@@ -46,7 +46,7 @@ inline constexpr size_t JKR_VMEM_ARENA_SIZE = 128ULL * 1024 * 1024 * 1024; // 12
 inline constexpr size_t JKR_HEAP_VIRTUAL_RESERVE = 64ULL * 1024 * 1024; // 64 MB
 
 // Minimum growth increment when a JKR heap expands into reserved but uncommitted pages
-inline constexpr size_t JKR_HEAP_GROW_CHUNK = 16ULL * 1024 * 1024; // 16 MB
+inline constexpr size_t JKR_HEAP_GROW_CHUNK = 4ULL * 1024 * 1024; // 4 MB
 
 // Maximum number of free slots the arena can track (= total slots in the arena)
 inline constexpr size_t JKR_VMEM_MAX_FREE_SLOTS = JKR_VMEM_ARENA_SIZE / JKR_HEAP_VIRTUAL_RESERVE;
