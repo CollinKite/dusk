@@ -107,12 +107,14 @@ int daObjLife_c::Create() {
 
 #if TARGET_PC
     if (randomizer_IsActive()) {
-        // Turn off the gravity for certain checks that are supposed to be on walls (like golden bugs)
+        // Turn off the gravity for certain checks (i.e. ones that need to be on walls)
         u8 stageIdx = getStageID();
         u8 flag = getSaveBitNo();
         u16 key = (stageIdx << 8) | flag;
 
         static constexpr auto hoveringChecks = std::to_array({
+            0x109F, // Zant Heart Container (so it doesn't fall through the floor)
+            0x199F, // Stallord Heart Container (so it doens't fall through the floor)
             0x3698, // Sacred Grove Female Snail
             0x3699, // Sacred Grove Male Snail
             0x3892, // Lake Hylia Bridge Female Mantis
@@ -126,7 +128,7 @@ int daObjLife_c::Create() {
             0x3D9E, // Upper Zoras River Female Dragonfly
         });
 
-        if (std::ranges::binary_search(hoveringChecks, key)) {
+        if (std::ranges::find(hoveringChecks, key) != hoveringChecks.end()) {
             mRotateSpeed = 550; // Rotate speed when on the ground
             fopAcM_SetGravity(this, 0.f);
         }
