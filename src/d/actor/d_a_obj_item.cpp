@@ -186,6 +186,7 @@ void daItem_c::CreateInit() {
         {
             case dItemNo_Randomizer_KAKERA_HEART_e:
             case dItemNo_Randomizer_UTAWA_HEART_e:
+            case dItemNo_Randomizer_ARROW_1_e:
             case dItemNo_Randomizer_ARROW_10_e:
             case dItemNo_Randomizer_ARROW_20_e:
             case dItemNo_Randomizer_ARROW_30_e:
