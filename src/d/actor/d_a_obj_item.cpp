@@ -314,21 +314,7 @@ int daItem_c::_daItem_create() {
         shape_angle.z = 0;
         shape_angle.x = 0;
 #if TARGET_PC
-        if (randomizer_IsActive()) {
-            u32 params = fopAcM_GetParam(this);
-            u8 flag = daItem_prm::getItemBitNo(this);
-            u8 stageIdx = getStageID();
-            u16 key = (stageIdx << 8) | flag;
-            auto& freestandingOverrides = randomizer_GetContext().mFreestandingItemOverrides;
-            // If we found an override for this freestanding item
-            if (freestandingOverrides.contains(key)) {
-                // Clear the itemId and set it to out new itemId
-                params &= 0xFFFFFF00;
-                u8 newItemId = freestandingOverrides[key];
-                params |= verifyProgressiveItem(newItemId);
-                fopAcM_SetParam(this, params);
-            }
-        }
+        setRandomizerItem();
 #endif
         field_0x95d = true;
     }
@@ -570,6 +556,11 @@ void daItem_c::procInitGetDemoEvent() {
     fopAcM_orderItemEvent(this, 0, 0);
     eventInfo.onCondition(dEvtCnd_CANGETITEM_e);
 
+#if TARGET_PC
+    // Set rando item again incase this item is progressive and
+    // player picked up another one before this one on the same stage
+    setRandomizerItem();
+#endif
     m_item_id = fopAcM_createItemForTrBoxDemo(&current.pos, m_itemNo, -1, fopAcM_GetRoomNo(this),
                                               NULL, NULL);
     JUT_ASSERT(0, m_item_id != fpcM_ERROR_PROCESS_ID_e);
@@ -993,6 +984,11 @@ void daItem_c::itemGetNextExecute() {
 }
 
 void daItem_c::itemGet() {
+#if TARGET_PC
+    // Set rando item again incase this item is progressive and
+    // player picked up another one before this one on the same stage
+    setRandomizerItem();
+#endif
     switch (m_itemNo) {
     case dItemNo_HEART_e:
         mDoAud_seStart(Z2SE_HEART_PIECE_GET, NULL, 0, 0);
@@ -1201,6 +1197,27 @@ void daItem_c::set_bound_se() {
         break;
     }
 }
+
+#if TARGET_PC
+void daItem_c::setRandomizerItem() {
+    if (randomizer_IsActive()) {
+        u32 params = fopAcM_GetParam(this);
+        u8 flag = daItem_prm::getItemBitNo(this);
+        u8 stageIdx = getStageID();
+        u16 key = (stageIdx << 8) | flag;
+        auto& freestandingOverrides = randomizer_GetContext().mFreestandingItemOverrides;
+        // If we found an override for this freestanding item
+        if (freestandingOverrides.contains(key)) {
+            // Clear the itemId and set it to out new itemId
+            params &= 0xFFFFFF00;
+            u8 newItemId = freestandingOverrides[key];
+            params |= verifyProgressiveItem(newItemId);
+            fopAcM_SetParam(this, params);
+            m_itemNo = daItem_prm::getItemNo(this);
+        }
+    }
+}
+#endif
 
 s32 daItem_c::m_timer_max = 10000;
 
