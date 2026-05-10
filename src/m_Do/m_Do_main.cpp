@@ -90,6 +90,10 @@
 #include <TargetConditionals.h>
 #endif
 
+#if DUSK_ENABLE_SENTRY_NATIVE
+#include "dusk/ui/reporting.hpp"
+#endif
+
 // --- GLOBALS ---
 s8 mDoMain::developmentMode = -1;
 OSTime mDoMain::sPowerOnTime;
@@ -852,6 +856,12 @@ int game_main(int argc, char* argv[]) {
 
         dusk::IsGameLaunched = true;
     }
+
+#if DUSK_ENABLE_SENTRY_NATIVE
+    if (!dusk::getSettings().backend.wasCrashReportChosen) {
+        dusk::ui::push_document(std::make_unique<dusk::ui::CrashReportWindow>());
+    }
+#endif
 
     if (!dusk::getSettings().backend.wasPresetChosen) {
         dusk::ui::push_document(std::make_unique<dusk::ui::PresetWindow>());

@@ -1033,7 +1033,16 @@ SettingsWindow::SettingsWindow(bool prelaunch) : mPrelaunch(prelaunch) {
                             "inclusions:<br/><br/> "
                             "- Operating System<br/>- CPU Architecture<br/>- GPU Model & Driver "
                             "Version<br/>"
-                            "- Account Username"});
+                            "- Account Username"
+                .onChange = [](bool enabled) {
+                    if(enabled) {
+                        dusk::InitializeCrashReporting();
+                    }
+                    else {
+                        dusk::ShutdownCrashReporting();
+                    }
+                },
+            });
 #endif
         config_bool_select(leftPane, rightPane, getSettings().backend.skipPreLaunchUI,
             {
