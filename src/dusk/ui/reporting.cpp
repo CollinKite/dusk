@@ -1,10 +1,11 @@
-#if DUSK_SENTRY_NATIVE
+#if DUSK_ENABLE_SENTRY_NATIVE
 
 #include "reporting.hpp"
 
 #include "button.hpp"
 #include "dusk/config.hpp"
 #include "dusk/settings.h"
+#include "dusk/crash_reporting.h"
 #include "ui.hpp"
 
 #include <dolphin/gx/GXAurora.h>
@@ -27,7 +28,10 @@ CrashReportWindow::CrashReportWindow() : WindowSmall("modal", "modal-dialog") {
     auto* intro = append(mDialog, "div");
     intro->SetClass("modal-body", true);
     intro->SetInnerRML(
-        "Dusk can autometically send crash reports to developers, which help tremendously when finding and fixing bugs. These reports may include some personal information. This can be changed in the settings menu at any time.");
+        "Dusk can autometically send crash reports to the developers. "
+        "Submissions may contain sensitive information. Refrain from enabling reporting if you do not agree "
+        "with the following inclusions:<br/>- Operating System<br/>- CPU Architecture<br/>- GPU Model & Driver Version<br/>"
+        "- Account Username<br/><br/>This can be changed in the Settings menu at any time.");
 
     auto* grid = append(mDialog, "div");
     grid->SetClass("preset-grid", true);
@@ -40,16 +44,15 @@ CrashReportWindow::CrashReportWindow() : WindowSmall("modal", "modal-dialog") {
 
     static constexpr OptionInfo kOptions[] = {
         {"Enabled",
-         "Send crash reports to Dusk developers. Reports will include your system username.",
+         "Send crash reports to Dusk developers. Reports will include the information described above.",
          []() {
             dusk::getSettings().backend.enableCrashReporting.setValue(true);
          }},
         {"Disabled",
-         "Do not send crash reports. "
-         "This may make it more difficult to resolve any bugs you encounter.",
+         "Do not send crash reports. This may make it more difficult to resolve bugs you encounter.",
          []() {
             dusk::getSettings().backend.enableCrashReporting.setValue(false);
-            //ShutdownCrashReporting();
+            dusk::ShutdownCrashReporting();
          }},
     };
 
