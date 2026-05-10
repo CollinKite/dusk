@@ -203,12 +203,18 @@ bool input_neutral(int port) {
     return PADGetNativeButtonPressed(port) == -1 && PADGetNativeAxisPulled(port).nativeAxis == -1;
 }
 
-// A Keydown event with KI_ESCAPE may have been dispatched from the controller bindings,
-// so instead poll the keyboard input directly for Escape-to-unbind
 bool keyboard_escape_pressed() {
     int keyCount = 0;
     const bool* keys = SDL_GetKeyboardState(&keyCount);
-    return keys != nullptr && SDL_SCANCODE_ESCAPE < keyCount && keys[SDL_SCANCODE_ESCAPE];
+    if (keys == nullptr || SDL_SCANCODE_ESCAPE >= keyCount || !keys[SDL_SCANCODE_ESCAPE]) {
+        return false;
+    }
+    for (int i = 0; i < keyCount; ++i) {
+        if (i != SDL_SCANCODE_ESCAPE && keys[i]) {
+            return false;
+        }
+    }
+    return true;
 }
 
 Rml::String keyboard_key_name(s32 scancode) {
