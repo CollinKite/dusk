@@ -57,6 +57,8 @@
     <true/>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.adventure-games</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Connects to a Steam Controller over Bluetooth to use it as a gamepad.</string>
     <key>UILaunchStoryboardName</key>
     <string>LaunchScreen</string>
     <key>UIRequiresFullScreen</key>

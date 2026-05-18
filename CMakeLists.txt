@@ -565,6 +565,13 @@ if (IOS)
     target_sources(dusklight PRIVATE src/dusk/ios/FileSelectDialog.m)
     set_source_files_properties(src/dusk/ios/FileSelectDialog.m PROPERTIES COMPILE_FLAGS -fobjc-arc)
     target_link_libraries(dusklight PRIVATE ${UIKIT_FRAMEWORK} ${UNIFORM_TYPE_IDENTIFIERS_FRAMEWORK})
+
+    # Steam Controller support over Bluetooth LE (iOS only).
+    find_library(CORE_BLUETOOTH_FRAMEWORK CoreBluetooth REQUIRED)
+    target_sources(dusklight PRIVATE src/dusk/ios/SteamControllerBridge.mm)
+    set_source_files_properties(src/dusk/ios/SteamControllerBridge.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
+    target_link_libraries(dusklight PRIVATE ${CORE_BLUETOOTH_FRAMEWORK})
+    target_compile_definitions(dusklight PRIVATE DUSK_STEAM_CONTROLLER=1)
 endif ()
 
 include(extern/aurora/cmake/AuroraCopyRuntimeDLLs.cmake)
