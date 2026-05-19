@@ -301,7 +301,12 @@
         "CMAKE_DISABLE_FIND_PACKAGE_zstd": {
           "type": "BOOL",
           "value": true
-        }
+        },
+        "CMAKE_DISABLE_FIND_PACKAGE_PkgConfig": {
+          "type": "BOOL",
+          "value": true
+        },
+        "CMAKE_IGNORE_PREFIX_PATH": "/opt/homebrew"
       },
       "vendor": {
         "microsoft.com/VisualStudioSettings/CMake/1.0": {
