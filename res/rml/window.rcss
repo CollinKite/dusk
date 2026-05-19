@@ -509,32 +509,6 @@ progress.verification-progress-bar {
     color: rgba(224, 219, 200, 65%);
 }
 
-.upload-info {
-    display: flex;
-    flex-direction: column;
-    gap: 12dp;
-    width: 100%;
-}
-
-.upload-instructions {
-    display: block;
-    font-size: 16dp;
-    color: rgba(224, 219, 200, 80%);
-}
-
-.upload-url {
-    display: block;
-    font-size: 26dp;
-    font-weight: bold;
-    color: #FFFFFF;
-}
-
-.upload-status {
-    display: block;
-    font-size: 14dp;
-    color: rgba(224, 219, 200, 65%);
-}
-
 .modal-actions {
     display: flex;
     flex-direction: row;

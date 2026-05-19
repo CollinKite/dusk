@@ -518,122 +518,45 @@ private:
 }
 
 #if DUSK_USE_UPLOAD_PICKER
-// Replaces the file picker on tvOS: shows the address of an in-app upload
-// server and waits for a disc image to arrive from a browser on the LAN.
-class UploadModal : public WindowSmall {
-public:
-    UploadModal() : WindowSmall("modal", "modal-dialog") {
-        auto* header = append(mDialog, "div");
-        header->SetClass("modal-header", true);
+// tvOS has no system file picker, so the disc image is received over the
+// local network. The Prelaunch screen runs an in-app HTTP upload server and
+// shows its address inline; a finished upload feeds the normal verification
+// path. The server outlives any single Prelaunch instance.
+std::unique_ptr<UploadServer> sUploadServer;
 
-        auto* title = append(header, "div");
-        title->SetClass("modal-title", true);
-        title->SetInnerRML("Upload a disc image");
-
-        auto* icon = append(header, "icon");
-        icon->SetClass("verifying", true);
-
-        auto* body = append(mDialog, "div");
-        body->SetClass("modal-body", true);
-
-        auto* info = append(body, "div");
-        info->SetClass("upload-info", true);
-
-        mInstructions = append(info, "div");
-        mInstructions->SetClass("upload-instructions", true);
-
-        mUrl = append(info, "div");
-        mUrl->SetClass("upload-url", true);
-
-        mStatus = append(info, "div");
-        mStatus->SetClass("upload-status", true);
-
-        auto* actions = append(mDialog, "div");
-        actions->SetClass("modal-actions", true);
-        mCancelButton = std::make_unique<Button>(actions, "Cancel");
-        mCancelButton->root()->SetClass("modal-btn", true);
-        mCancelButton->on_pressed([this] { pop(); });
-
-        mServer.start(dusk::data::configured_data_path());
-        refresh();
+void ensure_upload_server() {
+    if (sUploadServer == nullptr) {
+        sUploadServer = std::make_unique<UploadServer>();
     }
-
-    void update() override {
-        if (mFinished) {
-            return;
-        }
-        if (auto completed = mServer.take_completed_upload()) {
-            mFinished = true;
-            begin_disc_verification(completed->string());
-            pop();
-            return;
-        }
-        refresh();
+    if (!sUploadServer->running()) {
+        sUploadServer->start(dusk::data::configured_data_path());
     }
+}
 
-    bool focus() override { return mCancelButton != nullptr && mCancelButton->focus(); }
-
-protected:
-    bool handle_nav_command(Rml::Event& event, NavCommand cmd) override {
-        if (cmd == NavCommand::Cancel || cmd == NavCommand::Menu) {
-            pop();
-            event.StopPropagation();
-            return true;
-        }
-        if (cmd == NavCommand::Left || cmd == NavCommand::Right) {
-            return true;
-        }
-        return false;
+// The line shown beneath the disc status while waiting for an upload.
+std::string upload_server_status_text() {
+    if (sUploadServer == nullptr) {
+        return {};
     }
-
-private:
-    void refresh() {
-        const auto status = mServer.status();
-
-        switch (status.state) {
-        case UploadServer::State::Stopped:
-            mInstructions->SetInnerRML("Starting the upload server...");
-            mUrl->SetInnerRML("");
-            break;
-        case UploadServer::State::Failed:
-            mInstructions->SetInnerRML("The upload server could not start.");
-            mUrl->SetInnerRML("");
-            break;
-        case UploadServer::State::Running:
-            mInstructions->SetInnerRML(
-                "On a phone or computer on the same Wi-Fi network, open this address in a web "
-                "browser:");
-            mUrl->SetInnerRML(escape(status.url));
-            break;
-        }
-
-        if (status.state == UploadServer::State::Failed) {
-            mStatus->SetInnerRML(escape(status.error));
-        } else if (status.uploadActive) {
-            if (status.bytesTotal > 0) {
-                const float pct = 100.0f * static_cast<float>(status.bytesReceived) /
-                                  static_cast<float>(status.bytesTotal);
-                mStatus->SetInnerRML(escape(fmt::format("Receiving {}... {} / {} ({:.0f}%)",
-                    status.activeFileName, format_bytes(status.bytesReceived),
-                    format_bytes(status.bytesTotal), pct)));
-            } else {
-                mStatus->SetInnerRML(escape(fmt::format("Receiving {}... {}",
-                    status.activeFileName, format_bytes(status.bytesReceived))));
-            }
-        } else if (status.state == UploadServer::State::Running) {
-            mStatus->SetInnerRML("Waiting for an upload...");
-        } else {
-            mStatus->SetInnerRML("");
-        }
+    const auto status = sUploadServer->status();
+    switch (status.state) {
+    case UploadServer::State::Stopped:
+        return "Starting upload server...";
+    case UploadServer::State::Failed:
+        return status.error;
+    case UploadServer::State::Running:
+        break;
     }
-
-    UploadServer mServer;
-    Rml::Element* mInstructions = nullptr;
-    Rml::Element* mUrl = nullptr;
-    Rml::Element* mStatus = nullptr;
-    std::unique_ptr<Button> mCancelButton;
-    bool mFinished = false;
-};
+    if (status.uploadActive) {
+        if (status.bytesTotal > 0) {
+            const double pct = 100.0 * static_cast<double>(status.bytesReceived) /
+                               static_cast<double>(status.bytesTotal);
+            return fmt::format("Receiving {}... {:.0f}%", status.activeFileName, pct);
+        }
+        return fmt::format("Receiving {}...", status.activeFileName);
+    }
+    return fmt::format("Open {} in a web browser to upload a disc image.", status.url);
+}
 #endif  // DUSK_USE_UPLOAD_PICKER
 
 PrelaunchState sPrelaunchState;
@@ -783,11 +706,9 @@ void open_iso_picker() noexcept {
     ensure_initialized();
 #if DUSK_USE_UPLOAD_PICKER
     try {
-        if (auto* host = top_document()) {
-            host->push(std::make_unique<UploadModal>());
-        }
+        ensure_upload_server();
     } catch (const std::exception& e) {
-        PrelaunchLog.error("Failed to open the upload server: {}", e.what());
+        PrelaunchLog.error("Failed to start the upload server: {}", e.what());
     }
 #else
     ShowFileSelect(&file_dialog_callback, nullptr, aurora::window::get_sdl_window(),
@@ -1024,7 +945,21 @@ void Prelaunch::update() {
             innerRML += state.activeDiscInfo.isPal ? "EUR" : "USA";
             mDiscDetail->SetInnerRML(innerRML);
         } else {
+#if DUSK_USE_UPLOAD_PICKER
+            // tvOS: surface the upload server's address inline (in place of a
+            // file picker) and feed any finished upload into verification.
+            if (sUploadServer != nullptr) {
+                if (auto completed = sUploadServer->take_completed_upload()) {
+                    begin_disc_verification(completed->string());
+                }
+                mDiscDetail->SetProperty(Rml::PropertyId::Display, Rml::Style::Display::Block);
+                mDiscDetail->SetInnerRML(escape(upload_server_status_text()));
+            } else {
+                mDiscDetail->SetProperty(Rml::PropertyId::Display, Rml::Style::Display::None);
+            }
+#else
             mDiscDetail->SetProperty(Rml::PropertyId::Display, Rml::Style::Display::None);
+#endif
         }
     }
     if (mVersion != nullptr) {
