@@ -47,23 +47,9 @@ constexpr ButtonMapping kButtonMappings[] = {
     { 19, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER },   // L1
 };
 
-// The controller reports stick Y with positive pointing up, the opposite of
-// SDL's gamepad convention (positive down), so both vertical axes are flipped.
-constexpr bool kInvertStickY = true;
-
 int16_t readInt16(const uint8_t *data, int offset) {
     return static_cast<int16_t>(static_cast<uint16_t>(data[offset]) |
                                 (static_cast<uint16_t>(data[offset + 1]) << 8));
-}
-
-int16_t stickAxis(int16_t value) {
-    if (!kInvertStickY) {
-        return value;
-    }
-    int inverted = -static_cast<int>(value);
-    if (inverted > 32767) inverted = 32767;
-    if (inverted < -32768) inverted = -32768;
-    return static_cast<int16_t>(inverted);
 }
 
 // The controller reports each analog trigger as 0...32767 (0 = released).
@@ -206,10 +192,12 @@ static bool steamControllerRumble(void *userdata, Uint16 lowFrequency, Uint16 hi
         SDL_SetJoystickVirtualButton(_virtualJoystick, mapping.sdlButton, pressed);
     }
 
+    // Sticks pass straight through: the controller's X and Y readings already
+    // match SDL's virtual joystick axis convention.
     SDL_SetJoystickVirtualAxis(_virtualJoystick, SDL_GAMEPAD_AXIS_LEFTX, readInt16(data, 9));
-    SDL_SetJoystickVirtualAxis(_virtualJoystick, SDL_GAMEPAD_AXIS_LEFTY, stickAxis(readInt16(data, 11)));
+    SDL_SetJoystickVirtualAxis(_virtualJoystick, SDL_GAMEPAD_AXIS_LEFTY, readInt16(data, 11));
     SDL_SetJoystickVirtualAxis(_virtualJoystick, SDL_GAMEPAD_AXIS_RIGHTX, readInt16(data, 13));
-    SDL_SetJoystickVirtualAxis(_virtualJoystick, SDL_GAMEPAD_AXIS_RIGHTY, stickAxis(readInt16(data, 15)));
+    SDL_SetJoystickVirtualAxis(_virtualJoystick, SDL_GAMEPAD_AXIS_RIGHTY, readInt16(data, 15));
     SDL_SetJoystickVirtualAxis(_virtualJoystick, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, triggerAxis(readInt16(data, 5)));
     SDL_SetJoystickVirtualAxis(_virtualJoystick, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, triggerAxis(readInt16(data, 7)));
 }
