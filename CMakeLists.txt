@@ -575,6 +575,15 @@ if (IOS OR TVOS)
     target_compile_definitions(dusklight PRIVATE DUSK_ENABLE_UPLOAD_SERVER=1)
 endif ()
 
+# Steam Controller support over Bluetooth LE (tvOS).
+if (TVOS)
+    find_library(CORE_BLUETOOTH_FRAMEWORK CoreBluetooth REQUIRED)
+    target_sources(dusklight PRIVATE src/dusk/ios/SteamControllerBridge.mm)
+    set_source_files_properties(src/dusk/ios/SteamControllerBridge.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
+    target_link_libraries(dusklight PRIVATE ${CORE_BLUETOOTH_FRAMEWORK})
+    target_compile_definitions(dusklight PRIVATE DUSK_STEAM_CONTROLLER=1)
+endif ()
+
 include(extern/aurora/cmake/AuroraCopyRuntimeDLLs.cmake)
 aurora_copy_runtime_dlls(dusklight)
 

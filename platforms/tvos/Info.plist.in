@@ -48,6 +48,8 @@
     <string>${MACOSX_BUNDLE_COPYRIGHT}</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Dusklight runs a local upload server so you can send a game disc image from a browser on the same network.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Connects to a Steam Controller over Bluetooth to use it as a gamepad.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>UILaunchStoryboardName</key>

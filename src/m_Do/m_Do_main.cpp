@@ -87,6 +87,10 @@
 #include "dusk/version.hpp"
 #include "dusk/discord_presence.hpp"
 #include "tracy/Tracy.hpp"
+
+#ifdef DUSK_STEAM_CONTROLLER
+#include "dusk/ios/SteamControllerBridge.h"
+#endif
 #include "f_pc/f_pc_draw.h"
 #include "tracy/Tracy.hpp"
 #include <RmlUi/Core.h>
@@ -632,6 +636,11 @@ int game_main(int argc, char* argv[]) {
         aurora_shutdown();
         return 0;
     }
+
+#ifdef DUSK_STEAM_CONTROLLER
+    // Bridge a Bluetooth LE Steam Controller into SDL as a virtual gamepad.
+    DuskSteamControllerStart();
+#endif
 
     dusk::ui::initialize();
     dusk::ui::push_document(std::make_unique<dusk::ui::Overlay>(), true, true);
