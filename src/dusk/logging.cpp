@@ -11,6 +11,10 @@
 #include "dusk/io.hpp"
 #include "tracy/Tracy.hpp"
 
+#ifdef DUSK_DEV_LOG_SERVER
+#include "dusk/dev_log_server.hpp"
+#endif
+
 #if TARGET_ANDROID
 #include "android/log.h"
 #include <vector>
@@ -137,6 +141,9 @@ static bool IsForStubLog(const char* message) {
 void aurora_log_callback(AuroraLogLevel level, const char* module, const char* message,
                          unsigned int len) {
     ZoneScoped;
+#ifdef DUSK_DEV_LOG_SERVER
+    dusk::dev_log::record(level, module, message, len);
+#endif
     if (StubLogEnabled && level != LOG_FATAL && IsForStubLog(message)) {
         dusk::SendToStubLog(level, module, message);
         return;
@@ -182,6 +189,9 @@ void aurora_log_callback(AuroraLogLevel level, const char* module, const char* m
 void aurora_log_callback(AuroraLogLevel level, const char* module, const char* message,
                          unsigned int len) {
     ZoneScoped;
+#ifdef DUSK_DEV_LOG_SERVER
+    dusk::dev_log::record(level, module, message, len);
+#endif
     if (StubLogEnabled && level != LOG_FATAL && IsForStubLog(message)) {
         dusk::SendToStubLog(level, module, message);
         return;

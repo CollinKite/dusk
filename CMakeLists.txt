@@ -573,6 +573,11 @@ endif ()
 if (IOS OR TVOS)
     target_sources(dusklight PRIVATE src/dusk/upload_server.cpp src/dusk/upload_server.hpp)
     target_compile_definitions(dusklight PRIVATE DUSK_ENABLE_UPLOAD_SERVER=1)
+
+    # Developer log server: streams the app's logs over the LAN, since a
+    # console is awkward to attach to a sideloaded iOS/tvOS build.
+    target_sources(dusklight PRIVATE src/dusk/dev_log_server.cpp src/dusk/dev_log_server.hpp)
+    target_compile_definitions(dusklight PRIVATE DUSK_DEV_LOG_SERVER=1)
 endif ()
 
 # Steam Controller support over Bluetooth LE (tvOS).

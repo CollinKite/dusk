@@ -91,6 +91,9 @@
 #ifdef DUSK_STEAM_CONTROLLER
 #include "dusk/ios/SteamControllerBridge.h"
 #endif
+#ifdef DUSK_DEV_LOG_SERVER
+#include "dusk/dev_log_server.hpp"
+#endif
 #include "f_pc/f_pc_draw.h"
 #include "tracy/Tracy.hpp"
 #include <RmlUi/Core.h>
@@ -640,6 +643,11 @@ int game_main(int argc, char* argv[]) {
 #ifdef DUSK_STEAM_CONTROLLER
     // Bridge a Bluetooth LE Steam Controller into SDL as a virtual gamepad.
     DuskSteamControllerStart();
+#endif
+
+#ifdef DUSK_DEV_LOG_SERVER
+    // Stream the app's logs over the local network for remote debugging.
+    dusk::dev_log::start();
 #endif
 
     dusk::ui::initialize();
