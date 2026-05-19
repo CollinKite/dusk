@@ -47,8 +47,9 @@ constexpr ButtonMapping kButtonMappings[] = {
     { 19, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER },   // L1
 };
 
-// If the vertical stick axes feel inverted in-game, set this to true.
-constexpr bool kInvertStickY = false;
+// The controller reports stick Y with positive pointing up, the opposite of
+// SDL's gamepad convention (positive down), so both vertical axes are flipped.
+constexpr bool kInvertStickY = true;
 
 int16_t readInt16(const uint8_t *data, int offset) {
     return static_cast<int16_t>(static_cast<uint16_t>(data[offset]) |
