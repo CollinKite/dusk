@@ -67,8 +67,15 @@ int16_t stickAxis(int16_t value) {
     return static_cast<int16_t>(inverted);
 }
 
+// The controller reports each analog trigger as 0...32767 (0 = released).
+// SDL's virtual gamepad, though, reads its trigger axes across the full Sint16
+// range and treats 0 as half-pressed, so a released trigger sent as 0 would
+// register as permanently half-held. Remap to -32768 (released)...32767 (full).
 int16_t triggerAxis(int16_t value) {
-    return value < 0 ? 0 : value;  // SDL trigger axes range 0...32767
+    if (value < 0) {
+        value = 0;
+    }
+    return static_cast<int16_t>(static_cast<int>(value) * 2 - 32768);
 }
 
 }  // namespace
