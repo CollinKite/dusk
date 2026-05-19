@@ -29,6 +29,20 @@
 
 #include "m_Do/m_Do_MemCard.h"
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
+// tvOS has no system file picker, so the disc image is received over the
+// local network through an in-app HTTP upload server instead.
+#if defined(DUSK_ENABLE_UPLOAD_SERVER) && defined(__APPLE__) && TARGET_OS_TV
+#define DUSK_USE_UPLOAD_PICKER 1
+#include "dusk/data.hpp"
+#include "dusk/upload_server.hpp"
+#else
+#define DUSK_USE_UPLOAD_PICKER 0
+#endif
+
 namespace dusk::ui {
 namespace {
 aurora::Module PrelaunchLog{"dusk::ui::prelaunch"};
@@ -71,7 +85,7 @@ const Rml::String kDocumentSource = R"RML(
 </rml>
 )RML";
 
-constexpr std::array<SDL_DialogFileFilter, 2> kDiscFileFilters{{
+[[maybe_unused]] constexpr std::array<SDL_DialogFileFilter, 2> kDiscFileFilters{{
     {"Game Disc Images", "iso;gcm;ciso;gcz;nfs;rvz;wbfs;wia;tgc"},
     {"All Files", "*"},
 }};
@@ -495,13 +509,132 @@ private:
     bool mFinished = false;
 };
 
-void file_dialog_callback(void*, const char* path, const char* error) {
+[[maybe_unused]] void file_dialog_callback(void*, const char* path, const char* error) {
     if (path == nullptr || error != nullptr) {
         return;
     }
 
     begin_disc_verification(path);
 }
+
+#if DUSK_USE_UPLOAD_PICKER
+// Replaces the file picker on tvOS: shows the address of an in-app upload
+// server and waits for a disc image to arrive from a browser on the LAN.
+class UploadModal : public WindowSmall {
+public:
+    UploadModal() : WindowSmall("modal", "modal-dialog") {
+        auto* header = append(mDialog, "div");
+        header->SetClass("modal-header", true);
+
+        auto* title = append(header, "div");
+        title->SetClass("modal-title", true);
+        title->SetInnerRML("Upload a disc image");
+
+        auto* icon = append(header, "icon");
+        icon->SetClass("verifying", true);
+
+        auto* body = append(mDialog, "div");
+        body->SetClass("modal-body", true);
+
+        auto* info = append(body, "div");
+        info->SetClass("upload-info", true);
+
+        mInstructions = append(info, "div");
+        mInstructions->SetClass("upload-instructions", true);
+
+        mUrl = append(info, "div");
+        mUrl->SetClass("upload-url", true);
+
+        mStatus = append(info, "div");
+        mStatus->SetClass("upload-status", true);
+
+        auto* actions = append(mDialog, "div");
+        actions->SetClass("modal-actions", true);
+        mCancelButton = std::make_unique<Button>(actions, "Cancel");
+        mCancelButton->root()->SetClass("modal-btn", true);
+        mCancelButton->on_pressed([this] { pop(); });
+
+        mServer.start(dusk::data::configured_data_path());
+        refresh();
+    }
+
+    void update() override {
+        if (mFinished) {
+            return;
+        }
+        if (auto completed = mServer.take_completed_upload()) {
+            mFinished = true;
+            begin_disc_verification(completed->string());
+            pop();
+            return;
+        }
+        refresh();
+    }
+
+    bool focus() override { return mCancelButton != nullptr && mCancelButton->focus(); }
+
+protected:
+    bool handle_nav_command(Rml::Event& event, NavCommand cmd) override {
+        if (cmd == NavCommand::Cancel || cmd == NavCommand::Menu) {
+            pop();
+            event.StopPropagation();
+            return true;
+        }
+        if (cmd == NavCommand::Left || cmd == NavCommand::Right) {
+            return true;
+        }
+        return false;
+    }
+
+private:
+    void refresh() {
+        const auto status = mServer.status();
+
+        switch (status.state) {
+        case UploadServer::State::Stopped:
+            mInstructions->SetInnerRML("Starting the upload server...");
+            mUrl->SetInnerRML("");
+            break;
+        case UploadServer::State::Failed:
+            mInstructions->SetInnerRML("The upload server could not start.");
+            mUrl->SetInnerRML("");
+            break;
+        case UploadServer::State::Running:
+            mInstructions->SetInnerRML(
+                "On a phone or computer on the same Wi-Fi network, open this address in a web "
+                "browser:");
+            mUrl->SetInnerRML(escape(status.url));
+            break;
+        }
+
+        if (status.state == UploadServer::State::Failed) {
+            mStatus->SetInnerRML(escape(status.error));
+        } else if (status.uploadActive) {
+            if (status.bytesTotal > 0) {
+                const float pct = 100.0f * static_cast<float>(status.bytesReceived) /
+                                  static_cast<float>(status.bytesTotal);
+                mStatus->SetInnerRML(escape(fmt::format("Receiving {}... {} / {} ({:.0f}%)",
+                    status.activeFileName, format_bytes(status.bytesReceived),
+                    format_bytes(status.bytesTotal), pct)));
+            } else {
+                mStatus->SetInnerRML(escape(fmt::format("Receiving {}... {}",
+                    status.activeFileName, format_bytes(status.bytesReceived))));
+            }
+        } else if (status.state == UploadServer::State::Running) {
+            mStatus->SetInnerRML("Waiting for an upload...");
+        } else {
+            mStatus->SetInnerRML("");
+        }
+    }
+
+    UploadServer mServer;
+    Rml::Element* mInstructions = nullptr;
+    Rml::Element* mUrl = nullptr;
+    Rml::Element* mStatus = nullptr;
+    std::unique_ptr<Button> mCancelButton;
+    bool mFinished = false;
+};
+#endif  // DUSK_USE_UPLOAD_PICKER
 
 PrelaunchState sPrelaunchState;
 
@@ -648,8 +781,18 @@ void ensure_initialized() noexcept {
 
 void open_iso_picker() noexcept {
     ensure_initialized();
+#if DUSK_USE_UPLOAD_PICKER
+    try {
+        if (auto* host = top_document()) {
+            host->push(std::make_unique<UploadModal>());
+        }
+    } catch (const std::exception& e) {
+        PrelaunchLog.error("Failed to open the upload server: {}", e.what());
+    }
+#else
     ShowFileSelect(&file_dialog_callback, nullptr, aurora::window::get_sdl_window(),
         kDiscFileFilters.data(), kDiscFileFilters.size(), nullptr, false);
+#endif
 }
 
 bool is_restart_pending() noexcept {

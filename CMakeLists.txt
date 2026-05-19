@@ -567,6 +567,14 @@ if (IOS)
     target_link_libraries(dusklight PRIVATE ${UIKIT_FRAMEWORK} ${UNIFORM_TYPE_IDENTIFIERS_FRAMEWORK})
 endif ()
 
+# In-app HTTP upload server. Used on tvOS, which has no system file picker,
+# to receive a game disc image from a browser on the same network. Built for
+# iOS too so the feature gets exercised by the iOS CI job.
+if (IOS OR TVOS)
+    target_sources(dusklight PRIVATE src/dusk/upload_server.cpp src/dusk/upload_server.hpp)
+    target_compile_definitions(dusklight PRIVATE DUSK_ENABLE_UPLOAD_SERVER=1)
+endif ()
+
 include(extern/aurora/cmake/AuroraCopyRuntimeDLLs.cmake)
 aurora_copy_runtime_dlls(dusklight)
 
