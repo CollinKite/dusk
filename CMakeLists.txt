@@ -637,12 +637,28 @@ if (IOS)
     target_link_libraries(dusklight PRIVATE ${UIKIT_FRAMEWORK} ${UNIFORM_TYPE_IDENTIFIERS_FRAMEWORK})
 endif ()
 
-# In-app HTTP upload server. Used on tvOS, which has no system file picker,
-# to receive a game disc image from a browser on the same network. Built for
-# iOS too so the feature gets exercised by the iOS CI job.
-if (IOS OR TVOS)
+# In-app HTTP upload server. tvOS only: it has no system file picker, so it
+# receives a game disc image from a browser on the same network. iOS uses the
+# native file picker (FileSelectDialog) instead and does not build this.
+if (TVOS)
     target_sources(dusklight PRIVATE src/dusk/upload_server.cpp src/dusk/upload_server.hpp)
     target_compile_definitions(dusklight PRIVATE DUSK_ENABLE_UPLOAD_SERVER=1)
+endif ()
+
+# Developer log server + Steam Controller bridge (iOS and tvOS).
+if (IOS OR TVOS)
+    # Developer log server: streams the app's logs over the LAN, since a
+    # console is awkward to attach to a sideloaded iOS/tvOS build.
+    target_sources(dusklight PRIVATE src/dusk/dev_log_server.cpp src/dusk/dev_log_server.hpp)
+    target_compile_definitions(dusklight PRIVATE DUSK_DEV_LOG_SERVER=1)
+
+    # Steam Controller support over Bluetooth LE (presented to SDL as a
+    # virtual gamepad). Bridge is shared by both Apple mobile targets.
+    find_library(CORE_BLUETOOTH_FRAMEWORK CoreBluetooth REQUIRED)
+    target_sources(dusklight PRIVATE src/dusk/ios/SteamControllerBridge.mm)
+    set_source_files_properties(src/dusk/ios/SteamControllerBridge.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
+    target_link_libraries(dusklight PRIVATE ${CORE_BLUETOOTH_FRAMEWORK})
+    target_compile_definitions(dusklight PRIVATE DUSK_STEAM_CONTROLLER=1)
 endif ()
 
 include(extern/aurora/cmake/AuroraCopyRuntimeDLLs.cmake)

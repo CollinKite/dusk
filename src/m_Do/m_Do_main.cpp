@@ -91,6 +91,13 @@
 #include "dusk/version.hpp"
 #include "dusk/discord_presence.hpp"
 #include "tracy/Tracy.hpp"
+
+#ifdef DUSK_STEAM_CONTROLLER
+#include "dusk/ios/SteamControllerBridge.h"
+#endif
+#ifdef DUSK_DEV_LOG_SERVER
+#include "dusk/dev_log_server.hpp"
+#endif
 #include "f_pc/f_pc_draw.h"
 #include "tracy/Tracy.hpp"
 #include <RmlUi/Core.h>
@@ -164,6 +171,52 @@ AuroraInfo auroraInfo;
 AuroraStats dusk::lastFrameAuroraStats;
 float dusk::frameUsagePct = 0.0f;
 
+#ifdef DUSK_STEAM_CONTROLLER
+// The bridged Steam Controller reports left-stick Y as up = positive (down =
+// negative), the opposite of the standard SDL gamepad convention the default
+// axis mapping assumes. Flip the left-stick Y mapping for any port running the
+// Steam Controller so the stick navigates the right way. Idempotent: it only
+// touches the unflipped default, so it leaves user remaps and its own prior fix
+// alone, and re-applies if the controller reconnects.
+static void applySteamControllerAxisMapping() {
+    constexpr u32 kSteamControllerVid = 0x28DE;
+    constexpr u32 kSteamControllerPid = 0x1303;
+    for (u32 port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
+        u32 vid = 0;
+        u32 pid = 0;
+        PADGetVidPid(port, &vid, &pid);
+        if (vid != kSteamControllerVid || pid != kSteamControllerPid) {
+            continue;
+        }
+
+        u32 axisCount = 0;
+        PADAxisMapping* axes = PADGetAxisMappings(port, &axisCount);
+        if (axes == nullptr) {
+            continue;
+        }
+
+        bool needsFix = false;
+        for (u32 i = 0; i < axisCount; ++i) {
+            if (axes[i].padAxis == PAD_AXIS_LEFT_Y_POS &&
+                axes[i].nativeAxis.nativeAxis == SDL_GAMEPAD_AXIS_LEFTY &&
+                axes[i].nativeAxis.sign == AXIS_SIGN_NEGATIVE) {
+                needsFix = true;
+                break;
+            }
+        }
+        if (!needsFix) {
+            continue;
+        }
+
+        PADSetAxisMapping(port,
+            {{SDL_GAMEPAD_AXIS_LEFTY, AXIS_SIGN_POSITIVE}, SDL_GAMEPAD_BUTTON_INVALID, PAD_AXIS_LEFT_Y_POS});
+        PADSetAxisMapping(port,
+            {{SDL_GAMEPAD_AXIS_LEFTY, AXIS_SIGN_NEGATIVE}, SDL_GAMEPAD_BUTTON_INVALID, PAD_AXIS_LEFT_Y_NEG});
+        DuskLog.info("Applied Steam Controller left-stick Y mapping on port {}", port);
+    }
+}
+#endif
+
 bool launchUILoop() {
     while (dusk::IsRunning && !dusk::IsGameLaunched) {
         const AuroraEvent* event = aurora_update();
@@ -183,6 +236,10 @@ bool launchUILoop() {
 
             event++;
         }
+
+#ifdef DUSK_STEAM_CONTROLLER
+        applySteamControllerAxisMapping();
+#endif
 
         if (!aurora_begin_frame()) {
             DuskLog.debug("aurora_begin_frame returned false, skipping draw this frame");
@@ -277,6 +334,10 @@ void main01(void) {
 
             event++;
         }
+
+#ifdef DUSK_STEAM_CONTROLLER
+        applySteamControllerAxisMapping();
+#endif
 
         eventsDone:;
 
@@ -664,6 +725,17 @@ int game_main(int argc, char* argv[]) {
     }
 
     dusk::texture_replacements::reload();
+
+#ifdef DUSK_STEAM_CONTROLLER
+    // Bridge a Bluetooth LE Steam Controller into SDL as a virtual gamepad.
+    DuskSteamControllerStart();
+#endif
+
+#ifdef DUSK_DEV_LOG_SERVER
+    // Serve the app's logs over the LAN for sideloaded iOS/tvOS debugging.
+    dusk::dev_log::start();
+#endif
+
     dusk::ui::initialize();
     dusk::ui::push_document(std::make_unique<dusk::ui::Overlay>(), true, true);
     dusk::ui::push_document(std::make_unique<dusk::ui::TouchControls>(), false, true);
