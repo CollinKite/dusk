@@ -67,7 +67,10 @@ public:
 
     Derived& on_nav_command(std::function<bool(Rml::Event&, NavCommand)> callback) {
         listen(Rml::EventId::Click, [this, callback](Rml::Event& event) {
-            if (!disabled() && callback(event, NavCommand::Confirm)) {
+            // Ignore the activation that just opened the containing document, so
+            // a single Confirm can't open a menu/modal and immediately trigger a
+            // control within it.
+            if (!disabled() && !activation_gated() && callback(event, NavCommand::Confirm)) {
                 event.StopPropagation();
             }
         });
@@ -76,6 +79,9 @@ public:
                 return;
             }
             const auto cmd = map_nav_event(event);
+            if (cmd == NavCommand::Confirm && activation_gated()) {
+                return;
+            }
             if (cmd != NavCommand::None && callback(event, cmd)) {
                 event.StopPropagation();
             }

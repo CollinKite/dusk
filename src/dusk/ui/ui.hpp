@@ -79,6 +79,12 @@ bool any_document_visible() noexcept;
 bool is_prelaunch_open() noexcept;
 Document* top_document() noexcept;
 
+// Briefly suppresses Confirm/activation right after a document is shown, so the
+// same key press that opens a menu/modal can't immediately activate a control
+// inside it (the input event can otherwise reach the newly-focused element).
+void gate_activation() noexcept;
+bool activation_gated() noexcept;
+
 std::filesystem::path resource_path(const std::filesystem::path& filename) noexcept;
 std::string escape(std::string_view str) noexcept;
 Rml::Element* append(Rml::Element* parent, const Rml::String& tag) noexcept;

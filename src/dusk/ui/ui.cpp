@@ -5,6 +5,7 @@
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_joystick.h>
 #include <SDL3/SDL_power.h>
+#include <SDL3/SDL_timer.h>
 #include <SDL3/SDL_video.h>
 #include <absl/container/flat_hash_set.h>
 #include <aurora/rmlui.hpp>
@@ -196,9 +197,27 @@ Document& push_document(std::unique_ptr<Document> doc, bool show, bool passive) 
     }
     if (show) {
         ret.show();
+        gate_activation();
     }
     input::sync_input_block();
     return ret;
+}
+
+namespace {
+double sActivationGateUntil = 0.0;
+double activation_now() noexcept {
+    return static_cast<double>(SDL_GetTicksNS()) / 1000000000.0;
+}
+}  // namespace
+
+void gate_activation() noexcept {
+    // Long enough to swallow the duplicate Confirm from the same key press
+    // (~tens of ms apart), short enough not to drop a deliberate next press.
+    sActivationGateUntil = activation_now() + 0.18;
+}
+
+bool activation_gated() noexcept {
+    return activation_now() < sActivationGateUntil;
 }
 
 void focus_top_document(bool show) noexcept {
