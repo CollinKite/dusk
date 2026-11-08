@@ -294,6 +294,12 @@
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/install",
         "PLATFORM": "OS64",
         "DEPLOYMENT_TARGET": "14.0",
+        "AURORA_SDL3_PROVIDER": "vendor",
+        "AURORA_SDL3_VERSION": "3.4.16",
+        "AURORA_SDL3_REF": "refs/tags/release-3.4.16",
+        "SDL_JOYSTICK": true,
+        "SDL_HIDAPI": true,
+        "SDL_HIDAPI_JOYSTICK": true,
         "ENABLE_BITCODE": {
           "type": "BOOL",
           "value": false

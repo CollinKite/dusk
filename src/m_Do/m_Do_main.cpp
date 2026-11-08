@@ -91,7 +91,9 @@
 #include <borealis/version.h>
 #include <cxxopts.hpp>
 #include <dolphin/dvd.h>
+#include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_init.h>
+#include <SDL3/SDL_version.h>
 #include <tracy/Tracy.hpp>
 
 #include <filesystem>
@@ -490,6 +492,14 @@ static void LanguageInit() {
 static void log_build_info() {
     DuskLog.info("Build: {} (rev {}, built {}, type {})", BOREALIS_APP_DESCRIBE, BOREALIS_APP_REVISION, BOREALIS_APP_DATE, BOREALIS_BUILD_TYPE);
     DuskLog.info("Platform: {}", BOREALIS_PLATFORM_NAME);
+    const int sdlVersion = SDL_GetVersion();
+    DuskLog.info("SDL: {}.{}.{} (compiled {}.{}.{})",
+        SDL_VERSIONNUM_MAJOR(sdlVersion), SDL_VERSIONNUM_MINOR(sdlVersion), SDL_VERSIONNUM_MICRO(sdlVersion),
+        SDL_MAJOR_VERSION, SDL_MINOR_VERSION, SDL_MICRO_VERSION);
+#if defined(__APPLE__) && TARGET_OS_IOS
+    DuskLog.info("Steam Controller Bluetooth discovery: {}",
+        SDL_GetHintBoolean(SDL_HINT_JOYSTICK_HIDAPI_STEAM, false) ? "enabled" : "disabled");
+#endif
 }
 
 static void mods_init(const std::filesystem::path& mods_dir) {
@@ -552,6 +562,14 @@ int game_main(int argc, char* argv[]) {
         return 0;
     }
     mainCalled = true;
+
+#if defined(__APPLE__) && TARGET_OS_IOS
+    // SDL's iOS BLE manager reads this once, on its first HIDAPI initialization.
+    // Enable native Steam Controller (including Triton) discovery before any SDL subsystems.
+    if (!SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM, "1")) {
+        fprintf(stderr, "Failed to enable SDL Steam Controller Bluetooth discovery\n");
+    }
+#endif
 
     cxxopts::ParseResult parsed_arg_options;
     borealis::cli::StandardOptions standardOptions;
