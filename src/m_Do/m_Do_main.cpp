@@ -173,6 +173,7 @@ bool launchUILoop() {
             event++;
         }
 
+        dusk::ImGuiEngine_UpdateSafeArea();
         if (!aurora_begin_frame()) {
             DuskLog.debug("aurora_begin_frame returned false, skipping draw this frame");
             continue;
@@ -274,6 +275,7 @@ void main01(void) {
 
         eventsDone:;
 
+        dusk::ImGuiEngine_UpdateSafeArea();
         if (!aurora_begin_frame()) {
             DuskLog.debug("aurora_begin_frame returned false, skipping draw this frame");
             continue;
@@ -569,6 +571,10 @@ int game_main(int argc, char* argv[]) {
     if (!SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM, "1")) {
         fprintf(stderr, "Failed to enable SDL Steam Controller Bluetooth discovery\n");
     }
+    if (!SDL_SetHint(SDL_HINT_ORIENTATIONS,
+                     "Portrait PortraitUpsideDown LandscapeLeft LandscapeRight")) {
+        fprintf(stderr, "Failed to enable adaptive iOS orientations\n");
+    }
 #endif
 
     cxxopts::ParseResult parsed_arg_options;
@@ -743,11 +749,7 @@ int game_main(int argc, char* argv[]) {
         fmt::format("Dusklight {} [{}]", BOREALIS_APP_DESCRIBE, dusk::backend_name(auroraInfo.backend))
         .c_str());
 
-    if (dusk::getSettings().video.lockAspectRatio) {
-        AuroraSetViewportPolicy(AURORA_VIEWPORT_FIT);
-    } else {
-        AuroraSetViewportPolicy(AURORA_VIEWPORT_STRETCH);
-    }
+    dusk::presentation::apply_aspect_ratio();
     dusk::applyInternalResolutionScale(dusk::getSettings().game.internalResolutionScale.getValue());
     dusk::applyResampler(dusk::getSettings().game.resampler.getValue());
 

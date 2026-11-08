@@ -24,7 +24,7 @@
     <string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
     <key>CFBundleSupportedPlatforms</key>
     <array>
-      <string>iPhoneOS</string>
+      <string>${DUSK_IOS_SUPPORTED_PLATFORM}</string>
     </array>
     <key>CFBundleIcons</key>
     <dict>
@@ -67,6 +67,8 @@
     <string>UIStatusBarStyleDarkContent</string>
     <key>UISupportedInterfaceOrientations</key>
     <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationPortraitUpsideDown</string>
         <string>UIInterfaceOrientationLandscapeLeft</string>
         <string>UIInterfaceOrientationLandscapeRight</string>
     </array>

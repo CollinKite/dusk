@@ -16,6 +16,7 @@ public:
 };
 
 void ImGuiEngine_Initialize(float scale);
+void ImGuiEngine_UpdateSafeArea();
 void ImGuiEngine_AddTextures();
 
 struct Image {

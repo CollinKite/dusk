@@ -2,6 +2,7 @@
 
 #include "button.hpp"
 #include "dusk/config.hpp"
+#include "dusk/presentation.hpp"
 #include "dusk/settings.h"
 #include "ui.hpp"
 
@@ -13,6 +14,7 @@ namespace {
 void applyPresetClassic() {
     auto& s = getSettings();
     s.video.lockAspectRatio.setValue(true);
+    s.video.aspectRatio.setValue(1);
     s.game.bloomMode.setValue(BloomMode::Classic);
     s.game.depthOfFieldMode.setValue(DepthOfFieldMode::Classic);
     s.game.enableAchievementToasts.setValue(false);
@@ -22,7 +24,7 @@ void applyPresetClassic() {
     s.game.hideTvSettingsScreen.setValue(false);
     s.game.menuScalingMode.setValue(MenuScaling::GameCube);
     s.game.enableMenuPointer.setValue(false);
-    AuroraSetViewportPolicy(AURORA_VIEWPORT_FIT);
+    presentation::apply_aspect_ratio();
 }
 
 void applyPresetDusk() {

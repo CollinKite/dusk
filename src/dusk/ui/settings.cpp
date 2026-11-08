@@ -64,6 +64,8 @@ constexpr std::array kFpsOverlayCornerNames = {
     "Bottom Right",
 };
 
+constexpr std::array kAspectRatioModes = {"Fill Screen", "4:3", "16:9"};
+
 constexpr std::array kInterpolationModes = {
     "Off",
     "Capped",
@@ -702,15 +704,27 @@ SettingsWindow::SettingsWindow(bool prelaunch) : mPrelaunch(prelaunch) {
                 .helpText = "Synchronizes the frame rate to your monitor's refresh rate.",
                 .onChange = [](bool value) { aurora_enable_vsync(value); },
             });
-        config_bool_select(leftPane, rightPane, getSettings().video.lockAspectRatio,
-            {
-                .key = "Lock 4:3 Aspect Ratio",
-                .helpText = "Lock the game's aspect ratio to the original.",
-                .onChange =
-                    [](bool value) {
-                        AuroraSetViewportPolicy(
-                            value ? AURORA_VIEWPORT_FIT : AURORA_VIEWPORT_STRETCH);
-                    },
+        leftPane.register_control(
+            leftPane.add_select_button({
+                .key = "Screen Aspect Ratio",
+                .getValue = [] { return Rml::String{kAspectRatioModes[presentation::aspect_ratio_mode()]}; },
+                .isModified = [] { return getSettings().video.aspectRatio.getValue() != -1; },
+            }),
+            rightPane, [](Pane& pane) {
+                for (int i = 0; i < kAspectRatioModes.size(); ++i) {
+                    pane.add_button({
+                        .text = kAspectRatioModes[i],
+                        .isSelected = [i] { return presentation::aspect_ratio_mode() == i; },
+                    }).on_pressed([i] {
+                        mDoAud_seStartMenu(kSoundItemChange);
+                        getSettings().video.aspectRatio.setValue(i);
+                        presentation::apply_aspect_ratio();
+                        config::save();
+                    });
+                }
+                pane.add_rml("Fill uses the whole window and adapts the game view to its shape. "
+                             "4:3 and 16:9 preserve that shape with black bars when needed. "
+                             "On iPhone, rotate or unfold the device to change the available space.");
             });
         config_bool_select(leftPane, rightPane, getSettings().game.pauseOnFocusLost,
             {

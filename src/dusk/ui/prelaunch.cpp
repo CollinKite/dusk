@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <exception>
 #include <filesystem>
 #include <optional>
@@ -1017,6 +1018,22 @@ void Prelaunch::hide(bool close) {
 }
 
 void Prelaunch::update() {
+    if (mDocument != nullptr) {
+        auto* context = mDocument->GetContext();
+        const float padding = 16.0f * context->GetDensityIndependentPixelRatio();
+        const auto insets = safe_area_insets(context);
+        const Insets nextPadding{
+            std::ceil(insets.top + padding), std::ceil(insets.right + padding),
+            std::ceil(insets.bottom + padding), std::ceil(insets.left + padding)};
+        if (nextPadding != mSafeAreaPadding) {
+            mSafeAreaPadding = nextPadding;
+            mDocument->SetProperty("--prelaunch-safe-top", fmt::format("{}px", nextPadding.top));
+            mDocument->SetProperty("--prelaunch-safe-right", fmt::format("{}px", nextPadding.right));
+            mDocument->SetProperty("--prelaunch-safe-bottom", fmt::format("{}px", nextPadding.bottom));
+            mDocument->SetProperty("--prelaunch-safe-left", fmt::format("{}px", nextPadding.left));
+        }
+    }
+
     if (mModsButton) {
         mModsButton->set_disabled(!mods::ModLoader::instance().initialized());
         set_mod_update_badge(*mModsButton);

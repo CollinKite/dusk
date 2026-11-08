@@ -22,6 +22,7 @@
 #include <SDL3/SDL_power.h>
 #include <SDL3/SDL_video.h>
 #include <absl/container/flat_hash_set.h>
+#include <aurora/lib/webgpu/gpu.hpp>
 #include <aurora/lib/window.hpp>
 #include <aurora/rmlui.hpp>
 #include <borealis/io.hpp>
@@ -665,26 +666,46 @@ Insets safe_area_insets(Rml::Context* context) noexcept {
     }
 
     const AuroraWindowSize windowSize = aurora::window::get_window_size();
-    if (windowSize.width == 0 || windowSize.height == 0) {
+    if (windowSize.width == 0 || windowSize.height == 0 ||
+        windowSize.native_fb_width == 0 || windowSize.native_fb_height == 0)
+    {
         return {};
     }
 
     SDL_Rect safeRect{};
-    if (!SDL_GetWindowSafeArea(window, &safeRect)) {
+    if (!aurora::window::get_window_safe_area(safeRect)) {
         return {};
     }
 
     const Rml::Vector2i contextSize = context->GetDimensions();
-    const float scaleX = static_cast<float>(contextSize.x) / static_cast<float>(windowSize.width);
-    const float scaleY = static_cast<float>(contextSize.y) / static_cast<float>(windowSize.height);
+    if (contextSize.x <= 0 || contextSize.y <= 0) {
+        return {};
+    }
 
-    const float safeRight = static_cast<float>(safeRect.x + safeRect.w);
-    const float safeBottom = static_cast<float>(safeRect.y + safeRect.h);
+    const auto viewport = aurora::webgpu::calculate_present_viewport(windowSize.native_fb_width,
+        windowSize.native_fb_height, static_cast<uint32_t>(contextSize.x),
+        static_cast<uint32_t>(contextSize.y));
+    if (viewport.width <= 0.0f || viewport.height <= 0.0f) {
+        return {};
+    }
+
+    // Rml occupies the fitted game viewport. Insets outside that viewport are
+    // already covered by letterboxing and must not be applied a second time.
+    const float nativeScaleX =
+        static_cast<float>(windowSize.native_fb_width) / static_cast<float>(windowSize.width);
+    const float nativeScaleY =
+        static_cast<float>(windowSize.native_fb_height) / static_cast<float>(windowSize.height);
+    const float scaleX = static_cast<float>(contextSize.x) / viewport.width;
+    const float scaleY = static_cast<float>(contextSize.y) / viewport.height;
+    const float safeLeft = static_cast<float>(safeRect.x) * nativeScaleX;
+    const float safeTop = static_cast<float>(safeRect.y) * nativeScaleY;
+    const float safeRight = static_cast<float>(safeRect.x + safeRect.w) * nativeScaleX;
+    const float safeBottom = static_cast<float>(safeRect.y + safeRect.h) * nativeScaleY;
     return {
-        .top = std::max(0.0f, static_cast<float>(safeRect.y)) * scaleY,
-        .right = std::max(0.0f, static_cast<float>(windowSize.width) - safeRight) * scaleX,
-        .bottom = std::max(0.0f, static_cast<float>(windowSize.height) - safeBottom) * scaleY,
-        .left = std::max(0.0f, static_cast<float>(safeRect.x)) * scaleX,
+        .top = std::clamp(safeTop - viewport.top, 0.0f, viewport.height) * scaleY,
+        .right = std::clamp(viewport.left + viewport.width - safeRight, 0.0f, viewport.width) * scaleX,
+        .bottom = std::clamp(viewport.top + viewport.height - safeBottom, 0.0f, viewport.height) * scaleY,
+        .left = std::clamp(safeLeft - viewport.left, 0.0f, viewport.width) * scaleX,
     };
 }
 

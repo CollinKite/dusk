@@ -332,6 +332,29 @@
       }
     },
     {
+      "name": "ios-duo-simulator",
+      "displayName": "iPhone Duo Simulator (layout testing)",
+      "inherits": [
+        "ios-default"
+      ],
+      "cacheVariables": {
+        "PLATFORM": "SIMULATORARM64",
+        "DEPLOYMENT_TARGET": "27.1",
+        "Rust_CARGO_TARGET": "aarch64-apple-ios-sim",
+        "AURORA_DAWN_PROVIDER": "vendor",
+        "DUSK_ENABLE_CODE_MODS": false,
+        "DAWN_BUILD_TESTS": false,
+        "DAWN_ENABLE_VULKAN": false,
+        "DAWN_ENABLE_DESKTOP_GL": false,
+        "DAWN_ENABLE_OPENGLES": false,
+        "DAWN_ENABLE_D3D11": false,
+        "DAWN_ENABLE_D3D12": false,
+        "DAWN_ENABLE_NULL": false,
+        "DAWN_BUILD_PROTOBUF": false,
+        "TINT_BUILD_IR_BINARY": false
+      }
+    },
+    {
       "name": "tvos-default",
       "displayName": "tvOS",
       "generator": "Ninja",

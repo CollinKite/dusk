@@ -176,7 +176,8 @@ struct UserSettings {
         // Video
         ConfigVar<bool> enableFullscreen;
         ConfigVar<bool> enableVsync;
-        ConfigVar<bool> lockAspectRatio;
+        ConfigVar<bool> lockAspectRatio; // Legacy config, retained for migration.
+        ConfigVar<int> aspectRatio; // -1: legacy, 0: fill, 1: 4:3, 2: 16:9.
         ConfigVar<bool> enableFpsOverlay;
         ConfigVar<int> fpsOverlayCorner;
         ConfigVar<int> maxFrameRate;

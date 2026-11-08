@@ -442,7 +442,7 @@ body.animate-in .intro-item {
 }
 
 /* Mobile layout */
-@media (max-height: 640dp) {
+@media (max-height: 720dp) and (orientation: landscape) {
     body {
         --menu-button-decorator-hover: horizontal-gradient(#FEE68500 #FEE685FF);
     }
@@ -500,6 +500,7 @@ body.animate-in .intro-item {
     }
 
     #menu-list button {
+        box-sizing: border-box;
         width: 100%;
         max-width: 100%;
         text-align: right;
@@ -579,5 +580,93 @@ body.animate-in .intro-item {
 
     body.mirrored #disc-status {
         justify-content: flex-start;
+    }
+}
+
+
+/* Keep the launcher usable in narrow portrait scenes without changing landscape. */
+@media (max-width: 768dp) and (orientation: portrait) {
+    body {
+        --prelaunch-safe-top: 16dp;
+        --prelaunch-safe-right: 16dp;
+        --prelaunch-safe-bottom: 16dp;
+        --prelaunch-safe-left: 16dp;
+    }
+
+    content {
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: var(--space-md);
+        padding: var(--prelaunch-safe-top) var(--prelaunch-safe-right)
+                 var(--prelaunch-safe-bottom) var(--prelaunch-safe-left);
+        overflow: hidden auto;
+    }
+
+    menu,
+    body.mirrored menu {
+        position: relative;
+        left: auto;
+        right: auto;
+        top: auto;
+        transform: none;
+        flex: 0 0 auto;
+        flex-direction: column;
+        width: 100%;
+        min-width: 0;
+        max-width: 428dp;
+        margin: auto 0 0;
+        gap: var(--space-lg);
+    }
+
+    hero,
+    body.mirrored hero {
+        flex: 0 0 auto;
+        width: 100%;
+        max-width: 320dp;
+        margin: 0 auto;
+        align-items: center;
+    }
+
+    eyebrow {
+        display: none;
+    }
+
+    #menu-list {
+        flex: 0 0 auto;
+        width: 100%;
+        max-width: none;
+    }
+
+    #menu-list button {
+        box-sizing: border-box;
+        width: 100%;
+        max-width: 100%;
+    }
+
+    disc-info,
+    version-info,
+    body.mirrored disc-info,
+    body.mirrored version-info {
+        position: relative;
+        flex: 0 0 auto;
+        left: auto;
+        right: auto;
+        top: auto;
+        bottom: auto;
+        width: 100%;
+        max-width: 428dp;
+        font-size: var(--font-size-md);
+        gap: var(--space-xs);
+    }
+
+    version-info {
+        margin-bottom: auto;
+    }
+
+    #disc-version,
+    update-status {
+        font-size: var(--font-size-md);
     }
 }

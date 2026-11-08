@@ -10,6 +10,7 @@
 #include <SDL3/SDL_surface.h>
 #include <SDL3/SDL_video.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -51,11 +52,21 @@ ImVec2 GetDisplaySafeAreaPadding() {
     }
 
     SDL_Rect safeRect{};
-    if (!SDL_GetWindowSafeArea(window, &safeRect)) {
+    if (!aurora::window::get_window_safe_area(safeRect)) {
         return ImVec2(0.0f, 0.0f);
     }
 
-    return ImVec2(static_cast<float>(safeRect.x), static_cast<float>(safeRect.y));
+    const auto size = aurora::window::get_window_size();
+    const int width = static_cast<int>(size.width);
+    const int height = static_cast<int>(size.height);
+    if (width <= 0 || height <= 0) {
+        return ImVec2(0.0f, 0.0f);
+    }
+
+    // ImGui exposes symmetric padding only. Protect both edges when UIKit's
+    // safe area is asymmetric, including a vertical bar on either side.
+    return ImVec2(static_cast<float>(std::max({0, safeRect.x, width - safeRect.x - safeRect.w})),
+        static_cast<float>(std::max({0, safeRect.y, height - safeRect.y - safeRect.h})));
 }
 }  // namespace
 
@@ -176,6 +187,12 @@ void ImGuiEngine_Initialize(float scale) {
     colors[ImGuiCol_NavWindowingHighlight] = ImVec4(1.00f, 1.00f, 1.00f, 0.70f);
     colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0.80f, 0.80f, 0.80f, 0.20f);
     colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.00f, 0.00f, 0.00f, 0.60f);
+}
+
+void ImGuiEngine_UpdateSafeArea() {
+    if (ImGui::GetCurrentContext() != nullptr) {
+        ImGui::GetStyle().DisplaySafeAreaPadding = GetDisplaySafeAreaPadding();
+    }
 }
 
 Image GetImage(const std::string& path) {

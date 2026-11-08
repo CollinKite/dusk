@@ -1,0 +1,651 @@
+diff --git a/cmake/AuroraSDL3Provider.cmake b/cmake/AuroraSDL3Provider.cmake
+index 0f148b0..1aa28ba 100644
+--- a/cmake/AuroraSDL3Provider.cmake
++++ b/cmake/AuroraSDL3Provider.cmake
+@@ -148,6 +148,9 @@ elseif (_aurora_sdl3_provider STREQUAL "vendor")
+       COMMAND ${CMAKE_COMMAND}
+         -DSDL_SOURCE_DIR=<SOURCE_DIR>
+         -P "${CMAKE_CURRENT_LIST_DIR}/patches/apply-sdl3-android-security-exception.cmake"
++      COMMAND ${CMAKE_COMMAND}
++        -DSDL_SOURCE_DIR=<SOURCE_DIR>
++        -P "${CMAKE_CURRENT_LIST_DIR}/patches/apply-sdl3-uikit-modern-window-bounds.cmake"
+       EXCLUDE_FROM_ALL
+     )
+     FetchContent_MakeAvailable(SDL)
+diff --git a/lib/aurora.cpp b/lib/aurora.cpp
+index 9430842..a97f0fd 100644
+--- a/lib/aurora.cpp
++++ b/lib/aurora.cpp
+@@ -275,6 +275,18 @@ void end_frame() noexcept {
+                                                            webgpu::g_graphicsConfig.surfaceConfiguration.height,
+                                                            presentSource.size.width, presentSource.size.height);
+ 
++  // Log only extent changes so simulator traces can locate stale presentation state.
++  const std::array<uint32_t, 4> presentExtents{
++      webgpu::g_graphicsConfig.surfaceConfiguration.width, webgpu::g_graphicsConfig.surfaceConfiguration.height,
++      presentSource.size.width, presentSource.size.height};
++  static std::array<uint32_t, 4> previousPresentExtents{};
++  if (presentExtents != previousPresentExtents) {
++    previousPresentExtents = presentExtents;
++    Log.info("Present geometry: surface {}x{}, source {}x{}, viewport ({},{}) {}x{}",
++             presentExtents[0], presentExtents[1], presentExtents[2], presentExtents[3],
++             viewport.left, viewport.top, viewport.width, viewport.height);
++  }
++
+   wgpu::BindGroup rmlBindGroup;
+   bool rmlOverlay = false;
+ #if AURORA_ENABLE_RMLUI
+@@ -301,6 +313,13 @@ void end_frame() noexcept {
+         if (surfaceStatus == wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal) {
+           currentTexture = std::move(surfaceTexture.texture);
+           currentView = currentTexture.CreateView();
++          const std::array<uint32_t, 2> acquiredExtents{currentTexture.GetWidth(), currentTexture.GetHeight()};
++          static std::array<uint32_t, 2> previousAcquiredExtents{};
++          if (acquiredExtents != previousAcquiredExtents) {
++            previousAcquiredExtents = acquiredExtents;
++            Log.info("Acquired surface texture: {}x{}", acquiredExtents[0], acquiredExtents[1]);
++          }
++
+         }
+       }
+     }
+diff --git a/lib/dawn/MetalBinding.mm b/lib/dawn/MetalBinding.mm
+index df01ed3..31d8fe5 100644
+--- a/lib/dawn/MetalBinding.mm
++++ b/lib/dawn/MetalBinding.mm
+@@ -1,15 +1,153 @@
+ #include "BackendBinding.hpp"
++#include "MetalBinding.hpp"
+ 
+ #import <Foundation/Foundation.h>
+ #include <SDL3/SDL_metal.h>
+ #include <SDL3/SDL_properties.h>
+ 
++#import <TargetConditionals.h>
++#if TARGET_OS_IOS && !TARGET_OS_MACCATALYST
++#import <UIKit/UIKit.h>
++#import <QuartzCore/CAMetalLayer.h>
++#include <SDL3/SDL_events.h>
++#include <SDL3/SDL_init.h>
++#include <SDL3/SDL_log.h>
++#include <cmath>
++#include <mutex>
++#include <unordered_map>
++
++namespace {
++std::mutex s_geometryMutex;
++std::unordered_map<SDL_WindowID, aurora::webgpu::utils::UIKitMetalViewSize> s_geometry;
++}
++
++// Observe SDL's own Metal view without replacing its view controller or scene.
++@interface AuroraMetalGeometryObserver : UIView
++@property(nonatomic) SDL_WindowID windowID;
++@property(nonatomic) BOOL highDensity;
++@property(nonatomic) BOOL refreshQueued;
++@property(nonatomic) NSInteger hingeStatus;
++@property(nonatomic) CGSize loggedDrawableSize;
++- (void)updateGeometry;
++- (void)queueRefresh;
++@end
++
++@implementation AuroraMetalGeometryObserver
++- (instancetype)initWithFrame:(CGRect)frame {
++  self = [super initWithFrame:frame];
++  if (self) {
++    self.userInteractionEnabled = NO;
++    self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
++    self.backgroundColor = UIColor.clearColor;
++    self.hingeStatus = -1;
++    if (@available(iOS 17.0, *)) {
++      [self registerForTraitChanges:@[UITraitDisplayScale.class]
++                        withAction:@selector(updateGeometry)];
++    }
++#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 270100
++    if (@available(iOS 27.1, *)) {
++      __weak AuroraMetalGeometryObserver* weakSelf = self;
++      [self addInteraction:[[UIHingeInteraction alloc]
++          initWithUpdateHandler:^(UIHingeInteraction*, UIHingeInteractionUpdate* update) {
++        AuroraMetalGeometryObserver* observer = weakSelf;
++        if (!observer) return;
++        const NSInteger status = update.hinge ? (NSInteger)update.hinge.status : -1;
++        if (observer.hingeStatus != status) {
++          observer.hingeStatus = status;
++          SDL_Log("iOS hinge status changed: %ld", (long)status);
++          [observer updateGeometry];
++          [observer queueRefresh];
++        }
++      }]];
++    }
++#endif
++  }
++  return self;
++}
++- (void)layoutSubviews { [super layoutSubviews]; [self updateGeometry]; }
++- (void)safeAreaInsetsDidChange {
++  [super safeAreaInsetsDidChange];
++  [self updateGeometry];
++  [self queueRefresh];
++}
++- (void)didMoveToWindow {
++  [super didMoveToWindow];
++  [self updateGeometry];
++  [self queueRefresh];
++}
++- (void)updateGeometry {
++  UIView* metalView = self.superview;
++  if (!self.windowID || !metalView.window) return;
++  const CGSize bounds = metalView.bounds.size;
++  // Reading the local trait here also participates in automatic layout tracking.
++  const CGFloat scale = self.highDensity ? metalView.traitCollection.displayScale : 1.0;
++  if (bounds.width <= 0 || bounds.height <= 0 || !std::isfinite(scale) || scale <= 0) return;
++  const UIEdgeInsets insets = metalView.safeAreaInsets;
++  const aurora::webgpu::utils::UIKitMetalViewSize size{
++      (int)bounds.width, (int)bounds.height,
++      (int)(bounds.width * scale), (int)(bounds.height * scale), (float)scale,
++      (int)std::ceil(insets.left), (int)std::ceil(insets.top),
++      (int)std::ceil(insets.right), (int)std::ceil(insets.bottom)};
++  if (size.pixelWidth <= 0 || size.pixelHeight <= 0) return;
++  const bool scaleChanged = metalView.layer.contentsScale != scale;
++  if (scaleChanged) metalView.layer.contentsScale = scale;
++  bool changed;
++  {
++    std::lock_guard lock{s_geometryMutex};
++    auto& previous = s_geometry[self.windowID];
++    changed = previous != size;
++    previous = size;
++  }
++  CAMetalLayer* layer = (CAMetalLayer*)metalView.layer;
++  if (changed || scaleChanged || !CGSizeEqualToSize(self.loggedDrawableSize, layer.drawableSize)) {
++    self.loggedDrawableSize = layer.drawableSize;
++    NSLog(@"DuskMetal: view %@ bounds %@; layer %@ bounds %@ drawable %@; window %@; scale %.2f",
++          NSStringFromCGRect(metalView.frame), NSStringFromCGRect(metalView.bounds),
++          NSStringFromCGRect(layer.frame), NSStringFromCGRect(layer.bounds), NSStringFromCGSize(layer.drawableSize),
++          NSStringFromCGRect(metalView.window.bounds), scale);
++  }
++  if (changed || scaleChanged) [self queueRefresh];
++}
++- (void)queueRefresh {
++  if (self.refreshQueued || !self.windowID || !self.window) return;
++  self.refreshQueued = YES;
++  __weak AuroraMetalGeometryObserver* weakSelf = self;
++  dispatch_async(dispatch_get_main_queue(), ^{
++    AuroraMetalGeometryObserver* observer = weakSelf;
++    if (!observer) return;
++    // Keep the coalescing flag set while sampling the settled view bounds.
++    [observer updateGeometry];
++    observer.refreshQueued = NO;
++    if (!observer.windowID || !observer.window || !SDL_GetWindowFromID(observer.windowID)) return;
++    SDL_Event event{};
++    event.type = SDL_EVENT_WINDOW_METAL_VIEW_RESIZED;
++    event.window.windowID = observer.windowID;
++    SDL_PushEvent(&event);
++  });
++}
++@end
++#endif
++
+ namespace aurora::webgpu::utils {
+ namespace {
+ constexpr const char* MetalViewProperty = "aurora.metal_view";
+ 
+ void SDLCALL destroy_metal_view(void*, void* value) {
+   if (value != nullptr) {
++#if TARGET_OS_IOS && !TARGET_OS_MACCATALYST
++    UIView* metalView = (__bridge UIView*)value;
++    for (UIView* child in [metalView.subviews copy]) {
++      if ([child isKindOfClass:AuroraMetalGeometryObserver.class]) {
++        AuroraMetalGeometryObserver* observer = (AuroraMetalGeometryObserver*)child;
++        {
++          std::lock_guard lock{s_geometryMutex};
++          s_geometry.erase(observer.windowID);
++        }
++        observer.windowID = 0;
++        [observer removeFromSuperview];
++      }
++    }
++#endif
+     SDL_Metal_DestroyView(static_cast<SDL_MetalView>(value));
+   }
+ }
+@@ -28,6 +166,20 @@ void SDLCALL destroy_metal_view(void*, void* value) {
+       return nullptr;
+     }
+   }
++#if TARGET_OS_IOS && !TARGET_OS_MACCATALYST
++  UIView* metalView = (__bridge UIView*)view;
++  bool hasObserver = false;
++  for (UIView* child in metalView.subviews) {
++    if ([child isKindOfClass:AuroraMetalGeometryObserver.class]) hasObserver = true;
++  }
++  if (!hasObserver) {
++    AuroraMetalGeometryObserver* observer = [[AuroraMetalGeometryObserver alloc] initWithFrame:metalView.bounds];
++    observer.windowID = SDL_GetWindowID(window);
++    observer.highDensity = (SDL_GetWindowFlags(window) & SDL_WINDOW_HIGH_PIXEL_DENSITY) != 0;
++    [metalView addSubview:observer];
++    [observer updateGeometry];
++  }
++#endif
+   std::shared_ptr<wgpu::SurfaceSourceMetalLayer> desc = std::make_shared<wgpu::SurfaceSourceMetalLayer>();
+   desc->layer = SDL_Metal_GetLayer(view);
+   if (desc->layer == nullptr) {
+@@ -35,4 +187,23 @@ void SDLCALL destroy_metal_view(void*, void* value) {
+   }
+   return std::move(desc);
+ }
++#if TARGET_OS_IOS && !TARGET_OS_MACCATALYST
++bool GetUIKitMetalViewSize(SDL_Window* window, UIKitMetalViewSize& size) {
++  if (SDL_IsMainThread()) {
++    auto view = SDL_GetPointerProperty(SDL_GetWindowProperties(window), MetalViewProperty, nullptr);
++    UIView* metalView = (__bridge UIView*)view;
++    for (UIView* child in metalView.subviews) {
++      if ([child isKindOfClass:AuroraMetalGeometryObserver.class]) {
++        [(AuroraMetalGeometryObserver*)child updateGeometry];
++        break;
++      }
++    }
++  }
++  std::lock_guard lock{s_geometryMutex};
++  const auto it = s_geometry.find(SDL_GetWindowID(window));
++  if (it == s_geometry.end()) return false;
++  size = it->second;
++  return true;
++}
++#endif
+ } // namespace aurora::webgpu::utils
+diff --git a/lib/rmlui.cpp b/lib/rmlui.cpp
+index c82409d..2383dfb 100644
+--- a/lib/rmlui.cpp
++++ b/lib/rmlui.cpp
+@@ -60,11 +60,14 @@ Rml::Vector2i presentation_dimensions_from_window_size(const AuroraWindowSize& s
+   return dimensions_from_viewport(viewport);
+ }
+ 
++void cancel_tracked_touches() noexcept;
++
+ void sync_context_metrics(Rml::Vector2i dimensions) noexcept {
+   if (g_context == nullptr || dimensions.x <= 0 || dimensions.y <= 0) {
+     return;
+   }
+   if (g_context->GetDimensions() != dimensions) {
++    cancel_tracked_touches();
+     g_context->SetDimensions(dimensions);
+   }
+   const float ratio = s_uiScale > 0.0f ? s_uiScale : window::get_window_size().scale;
+@@ -345,6 +348,18 @@ void handle_touch_cancel(const SDL_TouchFingerEvent& finger) noexcept {
+   *tracked = {};
+   g_context->ProcessTouchCancel(touch_list(finger.fingerID, rmlPosition));
+ }
++
++void cancel_tracked_touches() noexcept {
++  // A fold, rotation or aspect change invalidates the gesture's old coordinates.
++  // Cancel instead of releasing so a resize cannot accidentally activate a button.
++  for (auto& touch : s_trackedTouches) {
++    if (touch.active) {
++      SDL_TouchFingerEvent finger{};
++      finger.fingerID = touch.id;
++      handle_touch_cancel(finger);
++    }
++  }
++}
+ } // namespace
+ 
+ void initialize(const AuroraWindowSize& size) noexcept {
+@@ -434,6 +449,8 @@ void handle_event(SDL_Event& event) noexcept {
+     handle_touch_cancel(event.tfinger);
+     return;
+   case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
++  case SDL_EVENT_WINDOW_METAL_VIEW_RESIZED:
++    cancel_tracked_touches();
+     sync_context_metrics(presentation_dimensions_from_window_size(window::get_window_size()));
+     return;
+   case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+diff --git a/lib/window.cpp b/lib/window.cpp
+index 2a4aadf..059dbde 100644
+--- a/lib/window.cpp
++++ b/lib/window.cpp
+@@ -3,6 +3,7 @@
+ #ifdef AURORA_ENABLE_GX
+ #include "imgui.hpp"
+ #include "webgpu/gpu.hpp"
++#include "dawn/MetalBinding.hpp"
+ #endif
+ #include "input.hpp"
+ #include "internal.hpp"
+@@ -29,6 +30,7 @@ extern "C" void Android_UnlockActivityMutex(void);
+ 
+ #include <algorithm>
+ #include <atomic>
++#include <cmath>
+ #include <deque>
+ #include <string>
+ #include <vector>
+@@ -45,6 +47,7 @@ SDL_Window* g_window;
+ SDL_Renderer* g_renderer;
+ float g_frameBufferScale = 0.f;
+ bool g_frameBufferAspectFit = false;
++std::atomic<float> g_frameBufferAspectRatio = 0.f;
+ AuroraWindowSize g_windowSize;
+ std::vector<AuroraEvent> g_events;
+ std::deque<std::string> g_eventStrings;
+@@ -106,14 +109,21 @@ Vec2<int> fit_frame_buffer_to_aspect(int width, int height, float aspect) {
+   return {width, std::max(1, static_cast<int>(std::lround(static_cast<float>(width) / aspect)))};
+ }
+ 
+-void resize_swapchain() noexcept {
++bool resize_swapchain(bool force = false) noexcept {
+   const auto size = get_window_size();
+-  if (size == g_windowSize) {
+-    return;
++  if (size == g_windowSize && !force) {
++    return false;
+   }
++  Log.info("Window resize: points {}x{}, native pixels {}x{}, content {}x{}, force={}",
++           size.width, size.height, size.native_fb_width, size.native_fb_height,
++           size.fb_width, size.fb_height, force);
+   if (size.scale != g_windowSize.scale) {
+     if (g_windowSize.scale > 0.f) {
+       Log.info("Display scale changed to {}", size.scale);
++      g_events.push_back(AuroraEvent{
++          .type = AURORA_DISPLAY_SCALE_CHANGED,
++          .windowSize = size,
++      });
+     }
+   }
+   g_windowSize = size;
+@@ -123,8 +133,9 @@ void resize_swapchain() noexcept {
+     SDL_SetRenderScale(g_renderer, size.scale, size.scale);
+   }
+ #ifdef AURORA_ENABLE_GX
+-  webgpu::resize_swapchain(size.fb_width, size.fb_height, size.native_fb_width, size.native_fb_height);
++  webgpu::resize_swapchain(size.fb_width, size.fb_height, size.native_fb_width, size.native_fb_height, force);
+ #endif
++  return true;
+ }
+ 
+ void set_window_icon() noexcept {
+@@ -204,17 +215,16 @@ void process_event(SDL_Event& event) {
+       break;
+     }
+     resize_swapchain();
+-    g_events.push_back(AuroraEvent{
+-        .type = AURORA_DISPLAY_SCALE_CHANGED,
+-        .windowSize = get_window_size(),
+-    });
+     break;
+   }
+-  case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: {
++  case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
++  case SDL_EVENT_WINDOW_METAL_VIEW_RESIZED: {
+     if (!primaryWindow) {
+       break;
+     }
+-    resize_swapchain();
++    // UIKit can update CAMetalLayer after SDL has already reported the new
++    // window size. Reconfigure even if those cached dimensions are unchanged.
++    resize_swapchain(event.type == SDL_EVENT_WINDOW_METAL_VIEW_RESIZED);
+     g_events.push_back(AuroraEvent{
+         .type = AURORA_WINDOW_RESIZED,
+         .windowSize = get_window_size(),
+@@ -310,6 +320,16 @@ const AuroraEvent* poll_events() {
+       break;
+     }
+   }
++#if TARGET_OS_IOS || TARGET_OS_TV
++  // Layout can settle after the resize events were delivered. Reconcile the
++  // final view bounds before rendering, independent of event ordering.
++  if (is_presentable() && resize_swapchain()) {
++    g_events.push_back(AuroraEvent{
++        .type = AURORA_WINDOW_RESIZED,
++        .windowSize = get_window_size(),
++    });
++  }
++#endif
+   g_events.push_back(AuroraEvent{
+       .type = AURORA_NONE,
+   });
+@@ -407,8 +427,11 @@ void show_window() {
+ 
+ bool initialize() {
+   /* We don't want to initialize anything input related here, otherwise the add events will get lost to the void */
+-  TRY(SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight"), "Error setting {}: {}", SDL_HINT_ORIENTATIONS,
+-      SDL_GetError());
++  // Respect an app-supplied orientation policy; retain the desktop/Android default.
++  if (!SDL_GetHint(SDL_HINT_ORIENTATIONS)) {
++    TRY(SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight"), "Error setting {}: {}", SDL_HINT_ORIENTATIONS,
++        SDL_GetError());
++  }
+   TRY(SDL_InitSubSystem(SDL_INIT_EVENTS | SDL_INIT_VIDEO), "Error initializing SDL: {}", SDL_GetError());
+   time::internal::set_pause_reason(time::internal::PauseReason::Surface,
+                                    !g_surfaceReady.load(std::memory_order_acquire));
+@@ -448,9 +471,25 @@ AuroraWindowSize get_window_size() {
+   int height = 0;
+   int native_fb_w = 0;
+   int native_fb_h = 0;
+-  AURORA_ASSERT(SDL_GetWindowSize(g_window, &width, &height), "Failed to get window size: {}", SDL_GetError());
+-  AURORA_ASSERT(SDL_GetWindowSizeInPixels(g_window, &native_fb_w, &native_fb_h), "Failed to get window size in pixels: {}",
+-         SDL_GetError());
++  float scale = 1.f;
++#if TARGET_OS_IOS && !TARGET_OS_MACCATALYST && defined(DAWN_ENABLE_BACKEND_METAL)
++  // SDL's logical size and screen scale can lag a fold/rotation. Use one
++  // coherent snapshot of the actual render view for both UI and GPU sizing.
++  webgpu::utils::UIKitMetalViewSize metalSize;
++  if (webgpu::utils::GetUIKitMetalViewSize(g_window, metalSize)) {
++    width = metalSize.width;
++    height = metalSize.height;
++    native_fb_w = metalSize.pixelWidth;
++    native_fb_h = metalSize.pixelHeight;
++    scale = metalSize.scale;
++  } else
++#endif
++  {
++    AURORA_ASSERT(SDL_GetWindowSize(g_window, &width, &height), "Failed to get window size: {}", SDL_GetError());
++    AURORA_ASSERT(SDL_GetWindowSizeInPixels(g_window, &native_fb_w, &native_fb_h), "Failed to get window size in pixels: {}",
++                  SDL_GetError());
++    scale = SDL_GetWindowDisplayScale(g_window);
++  }
+ 
+   int fb_w = native_fb_w;
+   int fb_h = native_fb_h;
+@@ -462,7 +501,12 @@ AuroraWindowSize get_window_size() {
+     fb_w = scaledW;
+     fb_h = scaledH;
+   }
+-  if (g_frameBufferAspectFit) {
++  const float aspect = g_frameBufferAspectRatio.load(std::memory_order_relaxed);
++  if (aspect > 0.f) {
++    const auto [fitW, fitH] = fit_frame_buffer_to_aspect(fb_w, fb_h, aspect);
++    fb_w = fitW;
++    fb_h = fitH;
++  } else if (g_frameBufferAspectFit) {
+     const auto [baseW, baseH] = vi::configured_fb_size();
+     if (baseW > 0 && baseH > 0) {
+       const auto [fitW, fitH] =
+@@ -472,7 +516,6 @@ AuroraWindowSize get_window_size() {
+     }
+   }
+ 
+-  const float scale = SDL_GetWindowDisplayScale(g_window);
+   return {
+       .width = static_cast<uint32_t>(width),
+       .height = static_cast<uint32_t>(height),
+@@ -484,6 +527,19 @@ AuroraWindowSize get_window_size() {
+   };
+ }
+ 
++bool get_window_safe_area(SDL_Rect& area) {
++#if TARGET_OS_IOS && !TARGET_OS_MACCATALYST && defined(DAWN_ENABLE_BACKEND_METAL)
++  webgpu::utils::UIKitMetalViewSize size;
++  if (webgpu::utils::GetUIKitMetalViewSize(g_window, size)) {
++    area = {size.safeLeft, size.safeTop,
++            std::max(0, size.width - size.safeLeft - size.safeRight),
++            std::max(0, size.height - size.safeTop - size.safeBottom)};
++    return true;
++  }
++#endif
++  return SDL_GetWindowSafeArea(g_window, &area);
++}
++
+ SDL_Window* get_sdl_window() { return g_window; }
+ 
+ SDL_Renderer* get_sdl_renderer() { return g_renderer; }
+@@ -587,6 +643,15 @@ void set_frame_buffer_aspect_fit(bool fit) {
+   request_frame_buffer_resize();
+ }
+ 
++void set_frame_buffer_aspect_ratio(float aspect) {
++  if (!std::isfinite(aspect) || aspect < 0.f) {
++    aspect = 0.f;
++  }
++  if (g_frameBufferAspectRatio.exchange(aspect, std::memory_order_relaxed) != aspect) {
++    request_frame_buffer_resize();
++  }
++}
++
+ void set_background_input(bool value) { SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, value ? "1" : "0"); }
+ 
+ } // namespace aurora::window
+diff --git a/lib/window.hpp b/lib/window.hpp
+index 51257ea..d2bef97 100644
+--- a/lib/window.hpp
++++ b/lib/window.hpp
+@@ -5,6 +5,7 @@
+ 
+ struct SDL_Window;
+ struct SDL_Renderer;
++struct SDL_Rect;
+ 
+ namespace aurora::window {
+ 
+@@ -35,6 +36,8 @@ bool create_renderer();
+ void destroy_window();
+ void show_window();
+ AuroraWindowSize get_window_size();
++// Safe rectangle in points from the current native view, when available.
++bool get_window_safe_area(SDL_Rect& area);
+ const AuroraEvent* poll_events();
+ SDL_Window* get_sdl_window();
+ SDL_Renderer* get_sdl_renderer();
+@@ -50,5 +53,7 @@ void center_window();
+ void request_frame_buffer_resize();
+ void set_frame_buffer_scale(float scale);
+ void set_frame_buffer_aspect_fit(bool fit);
++// Zero uses the existing viewport policy; a positive ratio fits content inside the window.
++void set_frame_buffer_aspect_ratio(float aspect);
+ void set_background_input(bool value);
+ }; // namespace aurora::window
+diff --git a/cmake/patches/apply-sdl3-uikit-modern-window-bounds.cmake b/cmake/patches/apply-sdl3-uikit-modern-window-bounds.cmake
+new file mode 100644
+index 0000000..f77107e
+--- /dev/null
++++ b/cmake/patches/apply-sdl3-uikit-modern-window-bounds.cmake
+@@ -0,0 +1,89 @@
++if (NOT DEFINED SDL_SOURCE_DIR OR SDL_SOURCE_DIR STREQUAL "")
++  message(FATAL_ERROR "SDL_SOURCE_DIR is required")
++endif ()
++
++set(_video "${SDL_SOURCE_DIR}/src/video/uikit/SDL_uikitvideo.m")
++if (NOT EXISTS "${_video}")
++  message(FATAL_ERROR "SDL UIKit video source is missing: ${_video}")
++endif ()
++
++# Match the entire known function so a future SDL change cannot silently
++# receive a partial patch. The visionOS function and legacy fallback stay intact.
++file(READ "${_video}" _source)
++set(_old [=[
++CGRect UIKit_ComputeViewFrame(SDL_Window *window, UIScreen *screen)
++{
++    SDL_UIKitWindowData *data = (__bridge SDL_UIKitWindowData *)window->internal;
++    CGRect frame = screen.bounds;
++
++    /* Use the UIWindow bounds instead of the UIScreen bounds, when possible.
++     * The uiwindow bounds may be smaller than the screen bounds when Split View
++     * is used on an iPad. */
++    if (data != nil && data.uiwindow != nil) {
++        frame = data.uiwindow.bounds;
++    }
++
++#ifndef SDL_PLATFORM_TVOS
++    /* iOS 10 seems to have a bug where, in certain conditions, putting the
++     * device to sleep with the a landscape-only app open, re-orienting the
++     * device to portrait, and turning it back on will result in the screen
++     * bounds returning portrait orientation despite the app being in landscape.
++     * This is a workaround until a better solution can be found.
++     * https://bugzilla.libsdl.org/show_bug.cgi?id=3505
++     * https://bugzilla.libsdl.org/show_bug.cgi?id=3465
++     * https://forums.developer.apple.com/thread/65337 */
++    UIInterfaceOrientation orient = [UIApplication sharedApplication].statusBarOrientation;
++    BOOL landscape = UIInterfaceOrientationIsLandscape(orient) ||
++                    !(UIKit_GetSupportedOrientations(window) & (UIInterfaceOrientationMaskPortrait | UIInterfaceOrientationMaskPortraitUpsideDown));
++    BOOL fullscreen = CGRectEqualToRect(screen.bounds, frame);
++
++    /* The orientation flip doesn't make sense when the window is smaller
++     * than the screen (iPad Split View, for example). */
++    if (fullscreen && (landscape != (frame.size.width > frame.size.height))) {
++        float height = frame.size.width;
++        frame.size.width = frame.size.height;
++        frame.size.height = height;
++    }
++#endif
++
++    return frame;
++}
++]=])
++set(_modern_window_bounds [=[
++
++    // Aurora local SDL fix: modern UIWindow bounds already use the correct
++    // coordinate space. The iOS 10 global-orientation workaround below can
++    // swap them back to a stale orientation during rotation or display changes.
++    if (@available(iOS 13.0, tvOS 13.0, *)) {
++        if (data != nil && data.uiwindow != nil) {
++            return data.uiwindow.bounds;
++        }
++    }
++
++    CGRect frame = screen.bounds;]=])
++string(REPLACE "    CGRect frame = screen.bounds;" "${_modern_window_bounds}" _new "${_old}")
++
++function(_count_exact text needle output)
++  string(REPLACE "${needle}" "" _remaining "${text}")
++  string(LENGTH "${text}" _text_length)
++  string(LENGTH "${_remaining}" _remaining_length)
++  string(LENGTH "${needle}" _needle_length)
++  math(EXPR _count "(${_text_length} - ${_remaining_length}) / ${_needle_length}")
++  set(${output} "${_count}" PARENT_SCOPE)
++endfunction()
++
++_count_exact("${_source}" "${_old}" _old_count)
++_count_exact("${_source}" "${_new}" _new_count)
++if (_old_count EQUAL 0 AND _new_count EQUAL 1)
++  message(STATUS "SDL3 UIKit modern window bounds patch already applied")
++  return()
++endif ()
++if (NOT _old_count EQUAL 1 OR NOT _new_count EQUAL 0)
++  message(FATAL_ERROR
++    "Failed to apply SDL3 UIKit modern window bounds patch: expected exactly one known "
++    "unpatched or patched UIKit_ComputeViewFrame function. Review the SDL revision and local changes.")
++endif ()
++
++string(REPLACE "${_old}" "${_new}" _patched_source "${_source}")
++file(WRITE "${_video}" "${_patched_source}")
++message(STATUS "Applied SDL3 UIKit modern window bounds patch")
+diff --git a/lib/dawn/MetalBinding.hpp b/lib/dawn/MetalBinding.hpp
+new file mode 100644
+index 0000000..9c0ad2b
+--- /dev/null
++++ b/lib/dawn/MetalBinding.hpp
+@@ -0,0 +1,15 @@
++#pragma once
++struct SDL_Window;
++namespace aurora::webgpu::utils {
++struct UIKitMetalViewSize {
++  int width = 0;
++  int height = 0;
++  int pixelWidth = 0;
++  int pixelHeight = 0;
++  float scale = 1.f;
++  int safeLeft = 0, safeTop = 0, safeRight = 0, safeBottom = 0;
++  bool operator==(const UIKitMetalViewSize&) const = default;
++};
++// UIKit is sampled on the main thread; render-thread callers read a snapshot.
++bool GetUIKitMetalViewSize(SDL_Window* window, UIKitMetalViewSize& size);
++} // namespace aurora::webgpu::utils
