@@ -1,0 +1,1323 @@
+#include "dusk/phone_spike_ws.h"
+
+#include "dusk/dualscreen.h"
+
+#if DUSK_PHONE_SPIKE
+
+#if defined(_WIN32)
+#error "phone_spike_ws.cpp is POSIX-sockets-only for now; not wired up for Windows. See file header."
+#endif
+
+#include "dusk/companion.h"
+#include "dusk/logging.h"
+#include "dusk/phone_spike_pad.h"
+#include "dusk/phone_spike_pairing.h"
+#include "dusk/phone_spike_sha1.h"
+
+#include "miniz.h"
+
+#include <nlohmann/json.hpp>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <atomic>
+#include <condition_variable>
+#include <csignal>
+#include <cstring>
+#include <algorithm>
+#include <deque>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <vector>
+
+namespace dusk::phone_spike {
+namespace {
+
+// Deliberately tiny: a <canvas>, a WebSocket to the same host on this same
+// port, binary frames drawn via createImageBitmap, and a rolling frame-
+// interval readout so the "real latency number" the spike exists to get is
+// visible without needing devtools. No pairing/token — manual URL entry only.
+constexpr std::string_view kTestPage = R"HTML(<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>dusklight companion spike</title>
+<style>
+  html,body{margin:0;background:#111;color:#ddd;font:14px monospace;height:100%}
+  #wrap{display:flex;flex-direction:column;height:100%}
+  #stats{padding:6px 10px;background:#222}
+  canvas{flex:1;width:100%;height:100%;object-fit:contain;background:#000}
+</style></head>
+<body><div id="wrap">
+<div id="stats">connecting...</div>
+<canvas id="c"></canvas>
+</div>
+<script>
+const stats = document.getElementById('stats');
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+// Carries the pairing token from the page's own URL (set by whatever
+// scanned the QR code) straight into the WS upgrade request's query string.
+const ws = new WebSocket(`ws://${location.host}/${location.search}`);
+ws.binaryType = 'arraybuffer';
+let lastFrameAt = 0;
+let intervals = [];
+ws.onopen = () => {
+  stats.textContent = 'connected, waiting for first frame...';
+  // Native device pixels, not CSS logical pixels — this is what should
+  // actually get rendered, matching computeAuxCanvas()'s native-resolution
+  // path on the PC side (see dualscreen.cpp).
+  const w = Math.round(window.innerWidth * (window.devicePixelRatio || 1));
+  const h = Math.round(window.innerHeight * (window.devicePixelRatio || 1));
+  ws.send(JSON.stringify({type: 'hello', width: w, height: h}));
+};
+ws.onclose = () => { stats.textContent = 'disconnected'; };
+ws.onerror = (e) => { stats.textContent = 'error (see console)'; console.error(e); };
+ws.onmessage = async (ev) => {
+  const now = performance.now();
+  if (lastFrameAt !== 0) {
+    intervals.push(now - lastFrameAt);
+    if (intervals.length > 30) intervals.shift();
+  }
+  lastFrameAt = now;
+  const blob = new Blob([ev.data], {type: 'image/png'});
+  const bitmap = await createImageBitmap(blob);
+  if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+  }
+  ctx.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  const avg = intervals.reduce((a, b) => a + b, 0) / (intervals.length || 1);
+  stats.textContent = `${bitmap.width}x${bitmap.height} | ` +
+    `avg frame interval ${avg.toFixed(1)}ms (${(1000/avg).toFixed(1)} fps) | ` +
+    `${ev.data.byteLength} bytes last frame`;
+};
+
+// Maps a pointer event to normalized 0-1 content coordinates, undoing the
+// CSS object-fit:contain letterbox by hand (there's no DOM API for it) —
+// same u/v convention dusk::companion::touchEvent already uses today via the
+// Android touch path, so the PC side needs zero translation.
+function pointerToUV(e) {
+  const rect = canvas.getBoundingClientRect();
+  const cw = canvas.width, ch = canvas.height;
+  if (cw === 0 || ch === 0 || rect.width === 0 || rect.height === 0) return null;
+  const scale = Math.min(rect.width / cw, rect.height / ch);
+  const dispW = cw * scale, dispH = ch * scale;
+  const offX = (rect.width - dispW) / 2, offY = (rect.height - dispH) / 2;
+  const x = e.clientX - rect.left - offX;
+  const y = e.clientY - rect.top - offY;
+  if (x < 0 || y < 0 || x > dispW || y > dispH) return null;
+  return {u: x / dispW, v: y / dispH};
+}
+canvas.addEventListener('pointerdown', (e) => {
+  const p = pointerToUV(e);
+  if (p && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({type: 'touch', action: 0, u: p.u, v: p.v}));
+  }
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (e.buttons === 0) return;
+  const p = pointerToUV(e);
+  if (p && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({type: 'touch', action: 1, u: p.u, v: p.v}));
+  }
+});
+canvas.addEventListener('pointerup', (e) => {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  const p = pointerToUV(e) || {u: 0, v: 0};
+  ws.send(JSON.stringify({type: 'touch', action: 2, u: p.u, v: p.v}));
+});
+
+// Gamepad passthrough (phase 5) — a gamepad connected to the PHONE, not the
+// PC, forwarded as a REAL second controller for the main game (NOT
+// companion navigation — the companion stays touch-only). Continuous full
+// state sent every animation frame, not discrete edge-triggered events:
+// the PC needs to know what's held right now, matching how a real
+// controller is read. Standard Gamepad mapping: buttons[0..3] = A/B/X/Y,
+// [4] = left shoulder -> Z (Twilight Princess leans on Z-target enough to
+// deserve an easy button), [6]/[7] = analog L/R triggers, [9] = Start,
+// [12..15] = D-pad. axes[0..1] = left stick (main), axes[2..3] = right
+// stick (C-stick).
+function pollGamepad() {
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  const pad = pads && pads[0];
+  if (pad && ws.readyState === WebSocket.OPEN) {
+    const b = pad.buttons;
+    const pressed = i => !!(b[i] && b[i].pressed);
+    const value = i => (b[i] && b[i].value) || 0;
+    ws.send(JSON.stringify({
+      type: 'pad',
+      up: pressed(12), down: pressed(13), left: pressed(14), right: pressed(15),
+      a: pressed(0), b: pressed(1), x: pressed(2), y: pressed(3),
+      start: pressed(9), z: pressed(4),
+      l: pressed(6), r: pressed(7),
+      leftStickX: pad.axes[0] || 0, leftStickY: pad.axes[1] || 0,
+      rightStickX: pad.axes[2] || 0, rightStickY: pad.axes[3] || 0,
+      leftTrigger: value(6), rightTrigger: value(7),
+    }));
+  }
+  requestAnimationFrame(pollGamepad);
+}
+requestAnimationFrame(pollGamepad);
+</script></body></html>)HTML";
+
+// g_clientMutex guards only the fd/generation swap and is never held across a
+// send(), so has_client()/client_generation() on the game thread can't stall
+// behind a slow PNG upload. g_sendMutex serializes writes to the socket so a
+// frame is never interleaved with another (or with a Pong). Lock order:
+// g_sendMutex, then g_clientMutex. Only client_receive_loop() close()s a
+// client fd; everyone else shutdown()s it, so its number can't be reused by
+// a new accept() while a reader or writer still holds it.
+std::mutex g_clientMutex;
+std::mutex g_sendMutex;
+int g_clientFd = -1;
+// Bumped each time a NEW client is adopted. The game-thread state senders
+// diff against a last-sent snapshot and send only on change; those snapshots
+// are long-lived statics, so without a way to notice a fresh client a
+// reconnecting phone received NOTHING until some value happened to change on
+// its own — a blank overlay that filled in only gradually, or never.
+uint32_t g_clientGeneration = 0;
+std::thread g_acceptThread;
+std::atomic<bool> g_running{false};
+int g_listenFd = -1;
+
+// Single-slot latest-frame hand-off, same shape as phone_spike_pad.h's
+// gamepad state: the game thread only ever needs to hand off the freshest
+// RAW capture, never a backlog — see queue_raw_frame()'s doc comment for
+// why this exists (a real phone over real Wi-Fi, unlike every earlier
+// loopback test, can make either the PNG encode or the send slow enough to
+// visibly stall the game thread if done synchronously there).
+std::mutex g_pendingFrameMutex;
+std::condition_variable g_pendingFrameCv;
+// Small JSON state messages waiting to go out, sharing the frame sender's
+// thread and mutex. They must NOT be sent straight from the game thread the
+// way the rare hud_state messages are: map_player is sent every frame the
+// player moves, and a blocking send() at that rate is precisely what made
+// the binary frame path stall the game before it was moved off-thread.
+struct PendingText {
+    std::string json;
+    // True when a LATER message of the same kind makes this one redundant
+    // (a newer player position supersedes an older one). False for
+    // edge-triggered messages — a haptic cue or a fetched icon is not
+    // replaced by anything, and silently dropping one loses it for good.
+    bool supersedable;
+};
+std::deque<PendingText> g_pendingTexts;
+std::vector<uint8_t> g_pendingFramePixels;
+uint32_t g_pendingFrameWidth = 0;
+uint32_t g_pendingFrameHeight = 0;
+bool g_pendingFrameReady = false;
+std::thread g_senderThread;
+
+std::mutex g_resizeMutex;
+bool g_resizePending = false;
+uint32_t g_pendingResizeW = 0;
+uint32_t g_pendingResizeH = 0;
+
+// Phase-2 state-streaming addition: pending "item" icon-fetch requests
+// (kind: "item" only — see dispatch_message()'s icon_request branch; other
+// kinds are reserved for later phases). Unlike resize's single-slot
+// latest-value semantics (only the newest size matters), each DISTINCT icon
+// request must actually be served — a bounded FIFO, not a single slot, so
+// e.g. the phone requesting its X, Y, and slot-I icons back to back all get
+// answered instead of the first two being silently dropped in favor of the
+// last. Capped small: if this is ever actually overflowing, something
+// upstream is requesting unreasonably many icons, not a real usage pattern
+// this needs to handle gracefully — drop the oldest and move on rather than
+// grow unbounded.
+constexpr size_t kMaxPendingIconRequests = 16;
+std::mutex g_iconRequestMutex;
+std::deque<uint8_t> g_pendingIconRequests;
+
+// Phase-4 addition: the dungeon map's base image. A single latch, not a
+// queue and not a want-list — there is only one current base image, so a
+// second request arriving while one is already pending is the SAME request
+// rather than another unit of work. Shares g_iconRequestMutex because it is
+// consumed by the same game-thread capture state machine.
+bool g_mapBaseWanted = false;
+// Bitmask of companion pages the phone says it renders natively. While the
+// page on screen is one of these, the PC stops capturing, encoding and
+// sending frames entirely — that suppression is the whole point of the
+// handshake, and it is what actually removes the latency rather than making
+// the stream cheaper. Declared by the phone only once it genuinely holds
+// what it needs to draw, so an empty or stale declaration degrades to the
+// streamed picture rather than a blank screen.
+std::atomic<uint32_t> g_clientOwnedPages{0};
+// Dungeon-map overlay icon kinds (ICON_*_e) the phone has asked for. A FIFO
+// like the item queue and for the same reason: each distinct kind must
+// actually be served, not replaced by a later one. Fourteen kinds exist, so
+// a small cap is plenty.
+std::deque<uint8_t> g_pendingMapIconRequests;
+
+// Art kinds added for the collection page, in one queue keyed by kind rather
+// than a third and fourth and fifth deque. The item and map-icon queues above
+// are deliberately left alone: they are verified working, and folding them in
+// here is a cleanup worth doing on its own rather than riding along with new
+// functionality.
+std::deque<std::pair<uint8_t, int32_t>> g_pendingArtRequests;
+// Deliberately far larger than the item queue's 16. A page does not trickle
+// its art in: the collection page asks for six plates, thirteen clct icons
+// and a couple of raw archive entries the moment it first needs to draw, and
+// at 16 the oldest requests were silently dropped by overflow. Found while
+// testing, where exactly the first five of twenty-one requests vanished.
+constexpr size_t kMaxPendingArtRequests = 64;
+
+// COLLECT reader bodies (text_request). Its own queue rather than two more
+// kinds in the art deque: art is drained inside the capture state machine's
+// tick, and a body is a pure archive walk that has no business waiting behind
+// a GPU capture cycle — so the two are served by different pollers. Small,
+// because a reader shows one entry at a time; a phone with more than this
+// outstanding is speculating, and dropping the oldest is the right end to
+// lose.
+constexpr size_t kMaxPendingTextRequests = 8;
+std::deque<std::pair<uint8_t, int32_t>> g_pendingTextRequests;
+
+// Actions the phone has decided on (see CompanionAction in the header). Its
+// own mutex, not g_iconRequestMutex: the icon queues are drained by the
+// capture state machine inside the painter's tick, this one by
+// beginFrameCompanionInput() at the top of the game frame, and there is no
+// reason for input to wait behind an icon fetch.
+//
+// 32, matching the plan's bound. Deeper than the tap queue's 8 because an
+// action costs nothing to hold — no capture, no archive, no draw — and a
+// burst of them (drag, drop, select, page) is ordinary play.
+constexpr size_t kMaxPendingActions = 32;
+std::mutex g_actionMutex;
+std::deque<CompanionAction> g_pendingActions;
+
+// Phase-3 addition: wanted heart-container states (0-4). A persistent
+// want-list, not a FIFO like the item queue above — see
+// request_heart_icon()'s doc comment in the header for why: a heart state
+// isn't always immediately servable (it only exists once the player's HP
+// has actually produced it), so "dequeue once, drop if not found" would
+// silently lose real requests. Same mutex as the item queue: both are tiny,
+// low-frequency, and never held long — no benefit to separating them.
+bool g_wantedHeartStates[5] = {};
+
+// Throttles heart probing: a live-pane scan cycle costs a full GPU
+// capture, even when nothing is found — cheap for items (an archive
+// texture load always succeeds immediately) but wasteful to attempt every
+// single frame for a heart state that might have no live match for
+// seconds. Worse than wasteful: wanting a heart makes
+// has_pending_icon_request() report true, which makes the binary
+// frame-streaming path yield its capture slot (see dualscreen.cpp's
+// pollAndPushSpikeFrame()) — probing every tick would starve normal
+// streaming for the WHOLE time a heart state stays unmet, not just
+// briefly. Throttled to roughly once every 30 frames; non-probe ticks
+// report "nothing wanted" to both the yield check and the arm logic, so
+// normal streaming proceeds completely undisturbed between probes.
+// has_pending_icon_request() computes and caches the decision (it runs
+// first each tick, via the binary path's yield check); take_next_wanted_
+// heart_state() reads the cached decision rather than recomputing it, so
+// both agree on the same tick.
+constexpr int kHeartProbeIntervalFrames = 30;
+int g_heartProbeCounter = 0;
+bool g_heartProbeDueThisTick = false;
+// Round-robin start index for the want-list scan. A plain 0..4 scan
+// head-of-line-blocks: whichever wanted state has the LOWEST index is
+// retried forever, and the states behind it are never probed at all while
+// it stays unavailable. That isn't hypothetical — state 0 (a genuinely
+// empty heart container) simply does not exist on screen while the player
+// is at full health, so a client asking for all 5 states got none of them,
+// not four of them. Rotating the scan start past each state taken means one
+// permanently-unavailable state costs a probe slot, not the whole feature.
+uint8_t g_heartProbeCursor = 0;
+
+bool read_http_headers(int fd, std::string& out) {
+    // Cap well above any real browser request's header size; anything past
+    // this is either not HTTP or malformed, either way not worth parsing.
+    constexpr size_t kMaxHeaderBytes = 8192;
+    char buf[1024];
+    while (out.size() < kMaxHeaderBytes) {
+        const ssize_t n = recv(fd, buf, sizeof(buf), 0);
+        if (n <= 0) {
+            return false;
+        }
+        out.append(buf, static_cast<size_t>(n));
+        if (out.find("\r\n\r\n") != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Case-insensitive single-header lookup. Good enough for the handful of
+// headers this needs to read; not a general HTTP parser.
+std::string find_header(const std::string& request, std::string_view name) {
+    size_t pos = 0;
+    while (pos < request.size()) {
+        const size_t lineEnd = request.find("\r\n", pos);
+        if (lineEnd == std::string::npos) {
+            break;
+        }
+        const std::string_view line(request.data() + pos, lineEnd - pos);
+        if (line.size() > name.size() && line[name.size()] == ':') {
+            bool match = true;
+            for (size_t i = 0; i < name.size(); ++i) {
+                if (std::tolower(static_cast<unsigned char>(line[i])) !=
+                    std::tolower(static_cast<unsigned char>(name[i])))
+                {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                size_t valueStart = name.size() + 1;
+                while (valueStart < line.size() && line[valueStart] == ' ') {
+                    ++valueStart;
+                }
+                return std::string(line.substr(valueStart));
+            }
+        }
+        pos = lineEnd + 2;
+    }
+    return {};
+}
+
+// Pulls a query-string parameter out of the request LINE ("GET
+// /?token=abc HTTP/1.1" -> "abc" for name="token"). No URL-decoding — the
+// only value this ever needs to read is a hex token this same server
+// generated, which never contains characters that would need it.
+std::string find_query_param(const std::string& request, std::string_view name) {
+    const size_t lineEnd = request.find("\r\n");
+    const std::string_view requestLine(request.data(), lineEnd == std::string::npos ? request.size() : lineEnd);
+    const size_t qmark = requestLine.find('?');
+    if (qmark == std::string_view::npos) {
+        return {};
+    }
+    const size_t spaceAfter = requestLine.find(' ', qmark);
+    const std::string_view query =
+        requestLine.substr(qmark + 1, (spaceAfter == std::string_view::npos ? requestLine.size() : spaceAfter) - qmark - 1);
+    size_t pos = 0;
+    while (pos < query.size()) {
+        const size_t amp = query.find('&', pos);
+        const std::string_view pair = query.substr(pos, (amp == std::string_view::npos ? query.size() : amp) - pos);
+        const size_t eq = pair.find('=');
+        if (eq != std::string_view::npos && pair.substr(0, eq) == name) {
+            return std::string(pair.substr(eq + 1));
+        }
+        if (amp == std::string_view::npos) {
+            break;
+        }
+        pos = amp + 1;
+    }
+    return {};
+}
+
+void send_all(int fd, const char* data, size_t len) {
+    size_t sent = 0;
+    while (sent < len) {
+        const ssize_t n = send(fd, data + sent, len - sent, 0);
+        if (n <= 0) {
+            return;
+        }
+        sent += static_cast<size_t>(n);
+    }
+}
+
+bool recv_exact(int fd, uint8_t* buf, size_t n) {
+    size_t got = 0;
+    while (got < n) {
+        const ssize_t r = recv(fd, buf + got, n - got, 0);
+        if (r <= 0) {
+            return false;
+        }
+        got += static_cast<size_t>(r);
+    }
+    return true;
+}
+
+enum class Opcode : uint8_t { Continuation = 0x0, Text = 0x1, Binary = 0x2, Close = 0x8, Ping = 0x9, Pong = 0xA };
+
+// Reads one client->server WS frame. Client frames are ALWAYS masked (RFC
+// 6455 §5.1) — unlike send_binary_frame's server->client path, which never
+// masks. No fragmentation support (FIN=0 is treated as an error and closes
+// the connection): every message this spike receives is a small one-shot
+// JSON blob from a real browser, which never fragments payloads this size.
+bool read_ws_frame(int fd, Opcode& opcodeOut, std::string& payloadOut) {
+    uint8_t head[2];
+    if (!recv_exact(fd, head, 2)) {
+        return false;
+    }
+    const bool fin = (head[0] & 0x80) != 0;
+    const auto opcode = static_cast<Opcode>(head[0] & 0x0F);
+    const bool masked = (head[1] & 0x80) != 0;
+    uint64_t len = head[1] & 0x7F;
+    if (!fin) {
+        return false;  // fragmentation not supported, see above
+    }
+    if (len == 126) {
+        uint8_t ext[2];
+        if (!recv_exact(fd, ext, 2)) {
+            return false;
+        }
+        len = (static_cast<uint64_t>(ext[0]) << 8) | ext[1];
+    } else if (len == 127) {
+        uint8_t ext[8];
+        if (!recv_exact(fd, ext, 8)) {
+            return false;
+        }
+        len = 0;
+        for (int i = 0; i < 8; ++i) {
+            len = (len << 8) | ext[i];
+        }
+    }
+    constexpr uint64_t kMaxPayload = 64 * 1024;  // input messages are tiny; anything past this is bogus
+    if (len > kMaxPayload) {
+        return false;
+    }
+    uint8_t maskKey[4] = {0, 0, 0, 0};
+    if (masked) {
+        if (!recv_exact(fd, maskKey, 4)) {
+            return false;
+        }
+    }
+    payloadOut.resize(static_cast<size_t>(len));
+    if (len > 0 && !recv_exact(fd, reinterpret_cast<uint8_t*>(payloadOut.data()), static_cast<size_t>(len))) {
+        return false;
+    }
+    if (masked) {
+        for (size_t i = 0; i < payloadOut.size(); ++i) {
+            payloadOut[i] = static_cast<char>(static_cast<uint8_t>(payloadOut[i]) ^ maskKey[i % 4]);
+        }
+    }
+    opcodeOut = opcode;
+    return true;
+}
+
+void send_control_frame(int fd, Opcode opcode, std::string_view payload = {}) {
+    std::lock_guard sendLock{g_sendMutex};
+    uint8_t head[2] = {static_cast<uint8_t>(0x80 | static_cast<uint8_t>(opcode)),
+        static_cast<uint8_t>(payload.size())};
+    send_all(fd, reinterpret_cast<char*>(head), 2);
+    if (!payload.empty()) {
+        send_all(fd, payload.data(), payload.size());
+    }
+}
+
+// The type-dependent half, split out so dispatch_message() below can put one
+// catch around all of it. Every msg.value() here THROWS if the field exists
+// with the wrong JSON type — a string where a number belongs — and this runs
+// on a bare std::thread with no handler above it, so one malformed message
+// from a client mid-development took the whole game down rather than being
+// dropped. Not hypothetical for a protocol under active construction on both
+// ends.
+void dispatch_parsed_message(const nlohmann::json& msg) {
+    const std::string type = msg.value("type", "");
+    if (type == "touch") {
+        companion::touchEvent(msg.value("action", 0), msg.value("u", 0.0f), msg.value("v", 0.0f));
+    } else if (type == "pinch") {
+        companion::pinchZoom(msg.value("factor", 1.0f));
+    } else if (type == "hello") {
+        // Native device pixels, already multiplied by devicePixelRatio on
+        // the JS side — see the test page's sendHello(). Bounds/sanity
+        // clamping happens on the game thread when this is consumed (see
+        // dualscreen.cpp), not here; this just hands the raw report off.
+        request_resize(msg.value("width", 0u), msg.value("height", 0u));
+    } else if (type == "icon_request") {
+        // "item" (Phase 2): equipped X/Y/slot-I/II items, plus the rupee
+        // gem and key icon, which are confirmed to already be ordinary
+        // archive item icons — see companion_state.cpp's
+        // companion_icon_decode.h. "heart" (Phase 3): one of the 5
+        // heart-container states — see companion_state.cpp's
+        // drawWantedHeartIcon(). "map_icon" is reserved for a later phase;
+        // silently ignored for now rather than warned on, since a phone
+        // built against the full protocol may legitimately send it before
+        // this PC supports it.
+        //
+        // "collect" / "raw_icon" / "deco" (Phase 5): the collection page's
+        // art. The first two were briefly called "clct" and "raw" on this
+        // side only; the phone view is the larger body of code and its names
+        // are the clearer ones, so the wire took them. The ArtKind enum kept
+        // its spelling — it is internal and renaming it would have touched
+        // every serve site for nothing.
+        const std::string kind = msg.value("kind", "");
+        if (kind == "item") {
+            request_icon(static_cast<uint8_t>(msg.value("id", 0)));
+        } else if (kind == "heart") {
+            request_heart_icon(static_cast<uint8_t>(msg.value("id", 0)));
+        } else if (kind == "collect") {
+            request_art(ART_CLCT, msg.value("id", 0));
+        } else if (kind == "raw_icon") {
+            request_art(ART_RAW, msg.value("id", 0));
+        } else if (kind == "deco") {
+            request_art(ART_DECO, msg.value("id", 0));
+        } else if (kind == "map_icon") {
+            request_map_icon(static_cast<uint8_t>(msg.value("id", 0)));
+        } else if (kind == "map_base") {
+            // Phase 4: the dungeon map's base image. A single latch rather
+            // than a queue or a want-list — there is only ever one current
+            // base image, so a second request while one is pending is the
+            // same request, not another unit of work.
+            request_map_base();
+        }
+    } else if (type == "text_request") {
+        // {"type":"text_request","kind":"skill","id":3}
+        //
+        // The COLLECT reader's long bodies, on their own channel rather than
+        // inside collect_state — see companion_collect_state.h for why a
+        // kilobyte of description that only one open entry ever wants must not
+        // ride on a message whose whole value is that it is rare.
+        const std::string kind = msg.value("kind", "");
+        // -1 by default and range-checked on the game thread, so a request
+        // with no id at all is refused there rather than reading entry 0.
+        if (kind == "skill") {
+            request_text(TEXT_SKILL, msg.value("id", -1));
+        } else if (kind == "letter") {
+            request_text(TEXT_LETTER, msg.value("id", -1));
+        } else {
+            DuskLog.warn("phone spike: unknown text_request kind '{}'", kind);
+        }
+    } else if (type == "action") {
+        // {"type":"action","do":"set_page","page":1,"seq":7}
+        // {"type":"action","do":"select_slot","slot":4,"seq":8}
+        // {"type":"action","do":"equip","button":0,"slot":4,"itemNo":12,
+        //  "combo":"replace","fromDrag":true,"seq":9}
+        //
+        // Parsed here (cheap, no game state touched) and queued; everything
+        // that could refuse it — menus, wolf form, a borrowed slot, a trade
+        // item — is decided on the game thread by the same executors the
+        // touch path calls, so the two can never disagree about what is
+        // allowed. This branch's only job is to not let an out-of-range
+        // integer off the wire reach them.
+        const std::string verb = msg.value("do", "");
+        CompanionAction action;
+        // Read wide and signed, then range-check. A negative seq read
+        // straight into the unsigned field would static_cast to something
+        // near 2^32 and pin the ack there for the rest of the session, which
+        // would silently refuse-by-timeout every later action the phone sent.
+        // Out of range degrades to 0 — unsequenced, so the action still runs,
+        // it just never moves the ack.
+        const int64_t seq = msg.value("seq", (int64_t)0);
+        action.seq = (seq > 0 && seq <= 0xFFFFFFFFll) ? (uint32_t)seq : 0u;
+        bool known = true;
+        if (verb == "set_page") {
+            action.verb = CompanionAction::SetPage;
+            action.page = msg.value("page", -1);
+        } else if (verb == "select_slot") {
+            action.verb = CompanionAction::SelectSlot;
+            // -1 is meaningful (clear the selection), so it is the default
+            // rather than a rejected value.
+            action.slot = msg.value("slot", -1);
+        } else if (verb == "equip") {
+            action.verb = CompanionAction::Equip;
+            action.button = msg.value("button", -1);
+            // The phone renders the grid from cells that carry BOTH the slot
+            // and the item, so it can name the slot outright — and it should:
+            // an item number alone is ambiguous across the four bottle slots,
+            // which routinely hold the same contents. itemNo is accepted for
+            // a client that only tracked the item, and used as a consistency
+            // check when both arrive.
+            action.slot = msg.value("slot", -1);
+            action.itemNo = msg.value("itemNo", -1);
+            action.combo = msg.value("combo", std::string("replace")) == "combo"
+                ? CompanionAction::ComboArm
+                : CompanionAction::ComboReplace;
+            action.fromDrag = msg.value("fromDrag", false);
+        } else if (verb == "collect_tab") {
+            // {"type":"action","do":"collect_tab","tab":3,"seq":11}
+            // The PC flips this itself when a library cell is tapped
+            // (companion_collect.cpp's drawCollectionContent and the touch
+            // path); this is the phone doing the same thing, so the two
+            // screens never show different sub-views of the same page.
+            action.verb = CompanionAction::CollectTab;
+            action.tab = msg.value("tab", -1);
+        } else if (verb == "equip_gear") {
+            // {"type":"action","do":"equip_gear","slot":5,"seq":12}
+            // A GEAR BOX index, not an inventory slot — see the Verb comment.
+            action.verb = CompanionAction::EquipGear;
+            action.slot = msg.value("slot", -1);
+        } else {
+            known = false;
+            DuskLog.warn("phone spike: unknown action verb '{}'", verb);
+        }
+        if (known) {
+            request_action(action);
+        }
+    } else if (type == "client_owns") {
+        // {"type":"client_owns","pages":[0,2]} — companion page indices the
+        // phone renders itself. Absent or empty means "send me pictures for
+        // everything", which is also what every older client implies.
+        uint32_t mask = 0;
+        if (msg.contains("pages") && msg["pages"].is_array()) {
+            for (const auto& entry : msg["pages"]) {
+                if (entry.is_number_integer()) {
+                    const int page = entry.get<int>();
+                    if (page >= 0 && page < 32) {
+                        mask |= 1u << page;
+                    }
+                }
+            }
+        }
+        set_client_owned_pages(mask);
+    } else if (type == "pad") {
+        // Full continuous state, not a discrete event — see
+        // phone_spike_pad.h. Sent every animation frame by the test page,
+        // so this just latches the newest report; applyGamepadPassthrough()
+        // (game thread) turns it into a real PADStatus each game frame.
+        GamepadState state;
+        state.up = msg.value("up", false);
+        state.down = msg.value("down", false);
+        state.left = msg.value("left", false);
+        state.right = msg.value("right", false);
+        state.a = msg.value("a", false);
+        state.b = msg.value("b", false);
+        state.x = msg.value("x", false);
+        state.y = msg.value("y", false);
+        state.start = msg.value("start", false);
+        state.l = msg.value("l", false);
+        state.r = msg.value("r", false);
+        state.z = msg.value("z", false);
+        state.leftStickX = msg.value("leftStickX", 0.0f);
+        state.leftStickY = msg.value("leftStickY", 0.0f);
+        state.rightStickX = msg.value("rightStickX", 0.0f);
+        state.rightStickY = msg.value("rightStickY", 0.0f);
+        state.leftTrigger = msg.value("leftTrigger", 0.0f);
+        state.rightTrigger = msg.value("rightTrigger", 0.0f);
+        set_gamepad_state(state);
+    } else {
+        DuskLog.warn("phone spike: unknown input message type '{}'", type);
+    }
+}
+
+void dispatch_message(std::string_view json) {
+    nlohmann::json msg;
+    try {
+        msg = nlohmann::json::parse(json);
+    } catch (const nlohmann::json::exception& e) {
+        DuskLog.warn("phone spike: malformed input JSON: {}", e.what());
+        return;
+    }
+    try {
+        dispatch_parsed_message(msg);
+    } catch (const nlohmann::json::exception& e) {
+        // A well-formed document with a wrongly-typed field. Dropped, not
+        // fatal — see dispatch_parsed_message's comment.
+        DuskLog.warn("phone spike: bad field in input message: {}", e.what());
+    }
+}
+
+// One thread per connection, spawned right after the handshake in
+// handle_connection(). Reads on its own — send_binary_frame() writes to the
+// same fd from the game thread concurrently, which is fine: POSIX sockets
+// are full-duplex and support independent reader/writer threads. Exits on
+// its own once the fd it captured is closed (either the client left, or
+// set_client() closed it to make room for a newer connection) — nothing
+// else needs to track or join this thread.
+void client_receive_loop(int fd) {
+    for (bool open = true; open;) {
+        Opcode opcode;
+        std::string payload;
+        if (!read_ws_frame(fd, opcode, payload)) {
+            break;
+        }
+        switch (opcode) {
+        case Opcode::Text:
+            dispatch_message(payload);
+            break;
+        case Opcode::Ping:
+            send_control_frame(fd, Opcode::Pong, payload);
+            break;
+        case Opcode::Close:
+            send_control_frame(fd, Opcode::Close);
+            open = false;
+            break;
+        default:
+            break;  // binary/pong/continuation: nothing this spike expects
+        }
+    }
+    // Retire the client right away so has_client() goes false and the pad
+    // passthrough releases whatever the phone was holding when it dropped.
+    {
+        std::lock_guard lock{g_clientMutex};
+        if (g_clientFd == fd) {
+            g_clientFd = -1;
+            set_gamepad_state(GamepadState{});
+        }
+    }
+    // Waits out any in-flight send on this fd before its number is freed.
+    std::lock_guard sendLock{g_sendMutex};
+    close(fd);
+}
+
+void set_client(int fd) {
+    std::lock_guard lock{g_clientMutex};
+    if (g_clientFd >= 0) {
+        // Its receive thread wakes up and close()s it.
+        shutdown(g_clientFd, SHUT_RDWR);
+    }
+    g_clientFd = fd;
+    if (fd >= 0) {
+        g_clientGeneration++;
+        // Bounded-blocking sends on the background sender thread: never hang
+        // forever on a stalled/dead client, but never silently write a
+        // partial frame either — see send_binary_frame's contract in the
+        // header. 50ms was tuned back when this ran synchronously on the
+        // GAME thread and needed to fail fast; now that it's off that
+        // thread (queue_binary_frame() + the sender thread — see above),
+        // blocking longer costs nothing, so this can afford to tolerate
+        // real Wi-Fi throughput dips instead of treating every one as a
+        // dead connection.
+        timeval tv{.tv_sec = 2, .tv_usec = 0};
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        const int one = 1;
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    }
+}
+
+void handle_connection(int fd) {
+    std::string request;
+    if (!read_http_headers(fd, request)) {
+        close(fd);
+        return;
+    }
+
+    const std::string upgrade = find_header(request, "Upgrade");
+    bool isWsUpgrade = upgrade.size() >= 9;
+    if (isWsUpgrade) {
+        for (size_t i = 0; i < 9; ++i) {
+            if (std::tolower(static_cast<unsigned char>(upgrade[i])) !=
+                std::tolower(static_cast<unsigned char>("websocket"[i])))
+            {
+                isWsUpgrade = false;
+                break;
+            }
+        }
+    }
+
+    if (!isWsUpgrade) {
+        // Plain GET: serve the test page and close. The phone then opens a
+        // fresh connection for the WS upgrade.
+        const std::string body(kTestPage);
+        std::string response = "HTTP/1.1 200 OK\r\n";
+        response += "Content-Type: text/html; charset=utf-8\r\n";
+        response += "Content-Length: ";
+        response += std::to_string(body.size());
+        response += "\r\n";
+        response += "Connection: close\r\n\r\n";
+        response += body;
+        send_all(fd, response.data(), response.size());
+        close(fd);
+        return;
+    }
+
+    const std::string key = find_header(request, "Sec-WebSocket-Key");
+    if (key.empty()) {
+        close(fd);
+        return;
+    }
+
+    // Token gate: this is the actual security boundary (the plain HTML GET
+    // above is unauthenticated on purpose — it's static and harmless; a live
+    // session that can read frames and inject input is the sensitive part).
+    // Only checked here, not the QR-scan step itself.
+    const std::string token = find_query_param(request, "token");
+    if (token.empty() || token != current_token()) {
+        DuskLog.warn("phone spike: rejected WS upgrade with {} token", token.empty() ? "missing" : "wrong");
+        static constexpr std::string_view kForbidden = "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n";
+        send_all(fd, kForbidden.data(), kForbidden.size());
+        close(fd);
+        return;
+    }
+
+    const std::string accept = websocket_accept_key(key);
+    const std::string response = "HTTP/1.1 101 Switching Protocols\r\n"
+                                 "Upgrade: websocket\r\n"
+                                 "Connection: Upgrade\r\n"
+                                 "Sec-WebSocket-Accept: " +
+        accept + "\r\n\r\n";
+    send_all(fd, response.data(), response.size());
+
+    DuskLog.info("phone spike: client connected");
+    set_client(fd);
+    // Detached: self-terminates when this fd is closed (client left, or a
+    // newer connection replaced it in set_client()) — see client_receive_loop.
+    std::thread(client_receive_loop, fd).detach();
+}
+
+void accept_loop(uint16_t port) {
+    while (g_running.load()) {
+        sockaddr_in clientAddr{};
+        socklen_t clientAddrLen = sizeof(clientAddr);
+        const int fd = accept(g_listenFd, reinterpret_cast<sockaddr*>(&clientAddr), &clientAddrLen);
+        if (fd < 0) {
+            if (!g_running.load()) {
+                break;
+            }
+            continue;
+        }
+        // One connection handled at a time, synchronously, on this thread —
+        // fine for a single-client spike; a stalled handshake just delays
+        // the next accept, it can't touch the game thread.
+        handle_connection(fd);
+    }
+}
+
+}  // namespace
+
+void sender_loop();  // defined below, after send_binary_frame
+
+bool start_server(uint16_t port) {
+    if (g_running.load()) {
+        return true;
+    }
+    // A send() to a socket whose peer already closed raises SIGPIPE, whose
+    // default disposition is to KILL THE WHOLE PROCESS — not just fail that
+    // call. Hit this for real: closing the test client mid-push took the
+    // entire game down with it, not just the WS connection. Global and
+    // process-wide, not per-socket (no portable per-call equivalent that
+    // works identically on both Linux's MSG_NOSIGNAL and macOS's
+    // SO_NOSIGPIPE), but standard practice for anything doing socket I/O —
+    // every failed send/recv already returns EPIPE/an error through the
+    // normal return-value path, which this code already checks.
+    std::signal(SIGPIPE, SIG_IGN);
+
+    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        DuskLog.warn("phone spike: socket() failed: {}", strerror(errno));
+        return false;
+    }
+    const int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(port);
+    if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        DuskLog.warn("phone spike: bind() to port {} failed: {}", port, strerror(errno));
+        close(fd);
+        return false;
+    }
+    if (listen(fd, 1) != 0) {
+        DuskLog.warn("phone spike: listen() failed: {}", strerror(errno));
+        close(fd);
+        return false;
+    }
+
+    g_listenFd = fd;
+    g_running = true;
+    g_acceptThread = std::thread(accept_loop, port);
+    g_senderThread = std::thread(sender_loop);
+    DuskLog.info("phone spike: listening on 0.0.0.0:{} (open http://<lan-ip>:{}/ on the phone)", port,
+        port);
+    return true;
+}
+
+void stop_server() {
+    if (!g_running.exchange(false)) {
+        return;
+    }
+    if (g_listenFd >= 0) {
+        shutdown(g_listenFd, SHUT_RDWR);
+        close(g_listenFd);
+        g_listenFd = -1;
+    }
+    if (g_acceptThread.joinable()) {
+        g_acceptThread.join();
+    }
+    {
+        std::lock_guard lock{g_pendingFrameMutex};
+        g_pendingFrameCv.notify_all();
+    }
+    if (g_senderThread.joinable()) {
+        g_senderThread.join();
+    }
+    set_client(-1);
+}
+
+uint32_t client_generation() {
+    std::lock_guard lock{g_clientMutex};
+    return g_clientGeneration;
+}
+
+bool has_client() {
+    std::lock_guard lock{g_clientMutex};
+    return g_clientFd >= 0;
+}
+
+// Shared by send_binary_frame/send_text_frame: RFC 6455 length-prefix
+// encoding is identical for both opcodes, only header[0]'s opcode nibble
+// differs. Server-to-client frames MUST NOT be masked (RFC 6455 §5.1) —
+// header[1]'s top bit stays 0, no masking key follows, for either.
+static void encode_frame_header(uint8_t opcode, size_t size, uint8_t (&header)[10], size_t& headerLen) {
+    headerLen = 2;
+    header[0] = static_cast<uint8_t>(0x80 | opcode);  // FIN=1
+    if (size <= 125) {
+        header[1] = static_cast<uint8_t>(size);
+    } else if (size <= 0xFFFF) {
+        header[1] = 126;
+        header[2] = static_cast<uint8_t>((size >> 8) & 0xFF);
+        header[3] = static_cast<uint8_t>(size & 0xFF);
+        headerLen = 4;
+    } else {
+        header[1] = 127;
+        for (int i = 0; i < 8; ++i) {
+            header[2 + i] = static_cast<uint8_t>((static_cast<uint64_t>(size) >> ((7 - i) * 8)) & 0xFF);
+        }
+        headerLen = 10;
+    }
+}
+
+// Drops the client after a failed send — unless a newer one already
+// replaced it. shutdown(), not close(): see g_clientMutex.
+static void drop_client(int fd) {
+    std::lock_guard lock{g_clientMutex};
+    if (g_clientFd == fd) {
+        g_clientFd = -1;
+    }
+    shutdown(fd, SHUT_RDWR);
+}
+
+// Shared by send_binary_frame/send_text_frame. Holds g_sendMutex for the
+// whole frame; g_clientMutex only long enough to read the fd.
+static bool send_frame(uint8_t opcode, const void* data, size_t size) {
+    std::lock_guard sendLock{g_sendMutex};
+    int fd;
+    {
+        std::lock_guard lock{g_clientMutex};
+        fd = g_clientFd;
+    }
+    if (fd < 0) {
+        return false;
+    }
+
+    uint8_t header[10];
+    size_t headerLen = 0;
+    encode_frame_header(opcode, size, header, headerLen);
+
+    const ssize_t hn = send(fd, header, headerLen, 0);
+    if (hn != static_cast<ssize_t>(headerLen)) {
+        DuskLog.warn("phone spike: frame header send failed/short, dropping client");
+        drop_client(fd);
+        return false;
+    }
+    size_t sent = 0;
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    while (sent < size) {
+        const ssize_t n = send(fd, bytes + sent, size - sent, 0);
+        if (n <= 0) {
+            // Partial frame already on the wire — the client's WS stream is
+            // now desynced no matter what we do from here, so the only
+            // correct move is to drop the connection, not try to recover.
+            DuskLog.warn("phone spike: frame payload send failed/timed out, dropping client");
+            drop_client(fd);
+            return false;
+        }
+        sent += static_cast<size_t>(n);
+    }
+    return true;
+}
+
+bool send_binary_frame(const void* data, size_t size) {
+    return send_frame(0x2, data, size);  // opcode 2 = binary
+}
+
+bool send_text_frame(std::string_view json) {
+    return send_frame(0x1, json.data(), json.size());  // opcode 1 = text
+}
+
+// Background sender thread's body: blocks on new raw captures, does the
+// PNG encode AND the (potentially slow, over real Wi-Fi) blocking
+// send_binary_frame() call here instead of on the game thread. Exits once
+// g_running goes false AND there's nothing left to wake it for.
+void sender_loop() {
+    for (;;) {
+        std::vector<uint8_t> pixels;
+        std::deque<PendingText> texts;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        bool haveFrame = false;
+        {
+            std::unique_lock lock{g_pendingFrameMutex};
+            g_pendingFrameCv.wait(lock, [] {
+                return g_pendingFrameReady || !g_pendingTexts.empty() || !g_running.load();
+            });
+            if (!g_running.load()) {
+                return;
+            }
+            texts.swap(g_pendingTexts);
+            haveFrame = g_pendingFrameReady;
+            if (haveFrame) {
+                pixels = std::move(g_pendingFramePixels);
+                width = g_pendingFrameWidth;
+                height = g_pendingFrameHeight;
+                g_pendingFrameReady = false;
+            }
+        }
+        // Texts first, and before the encode below: these are the tiny,
+        // latency-critical state messages (map_player is sent every frame the
+        // player moves), while a queued frame costs a multi-millisecond PNG
+        // encode. Letting an encode run ahead of them would add exactly the
+        // lag this whole state path exists to remove.
+        for (const PendingText& text : texts) {
+            if (!send_text_frame(text.json)) {
+                break;  // client gone; send_text_frame already tore it down
+            }
+        }
+        if (!haveFrame) {
+            continue;
+        }
+        // Level 1, not 6: same tradeoff dualscreen.cpp's screenshot path
+        // documents — level 6 costs several hundred extra ms per encode,
+        // not worth it for a smaller file here either.
+        size_t pngSize = 0;
+        void* png = tdefl_write_image_to_png_file_in_memory_ex(
+            pixels.data(), static_cast<int>(width), static_cast<int>(height), 4, &pngSize, 1, MZ_FALSE);
+        if (png == nullptr) {
+            DuskLog.warn("phone spike: PNG encode failed");
+            continue;
+        }
+        send_binary_frame(png, pngSize);
+        mz_free(png);
+    }
+}
+
+void queue_text_frame(std::string json, bool supersedable) {
+    std::lock_guard lock{g_pendingFrameMutex};
+    // Bounded. On overflow, drop the oldest SUPERSEDABLE message rather than
+    // simply the oldest: a stale player position is exactly what should be
+    // thrown away when the sender falls behind, but an icon payload or a
+    // haptic cue is edge-triggered and nothing later replaces it, so
+    // dropping one loses it permanently. Only if nothing supersedable is
+    // queued does this fall back to dropping the oldest outright.
+    constexpr size_t kMaxPendingTexts = 64;
+    if (g_pendingTexts.size() >= kMaxPendingTexts) {
+        auto victim = std::find_if(g_pendingTexts.begin(), g_pendingTexts.end(),
+            [](const PendingText& t) { return t.supersedable; });
+        if (victim != g_pendingTexts.end()) {
+            g_pendingTexts.erase(victim);
+        } else {
+            g_pendingTexts.pop_front();
+        }
+    }
+    g_pendingTexts.push_back(PendingText{std::move(json), supersedable});
+    g_pendingFrameCv.notify_one();
+}
+
+void queue_raw_frame(std::vector<uint8_t> pixels, uint32_t width, uint32_t height) {
+    std::lock_guard lock{g_pendingFrameMutex};
+    // Takes ownership (moved) — overwrites any frame still waiting to go
+    // out, so the connection always carries the freshest capture rather
+    // than a growing backlog of stale ones if the sender falls behind.
+    g_pendingFramePixels = std::move(pixels);
+    g_pendingFrameWidth = width;
+    g_pendingFrameHeight = height;
+    g_pendingFrameReady = true;
+    g_pendingFrameCv.notify_one();
+}
+
+void request_resize(uint32_t width, uint32_t height) {
+    std::lock_guard lock{g_resizeMutex};
+    g_pendingResizeW = width;
+    g_pendingResizeH = height;
+    g_resizePending = true;
+}
+
+bool take_pending_resize(uint32_t& width, uint32_t& height) {
+    std::lock_guard lock{g_resizeMutex};
+    if (!g_resizePending) {
+        return false;
+    }
+    width = g_pendingResizeW;
+    height = g_pendingResizeH;
+    g_resizePending = false;
+    return true;
+}
+
+void request_icon(uint8_t itemNo) {
+    std::lock_guard lock{g_iconRequestMutex};
+    if (g_pendingIconRequests.size() >= kMaxPendingIconRequests) {
+        g_pendingIconRequests.pop_front();
+    }
+    g_pendingIconRequests.push_back(itemNo);
+}
+
+bool take_pending_icon_request(uint8_t& itemNo) {
+    std::lock_guard lock{g_iconRequestMutex};
+    if (g_pendingIconRequests.empty()) {
+        return false;
+    }
+    itemNo = g_pendingIconRequests.front();
+    g_pendingIconRequests.pop_front();
+    return true;
+}
+
+bool has_pending_icon_request() {
+    std::lock_guard lock{g_iconRequestMutex};
+    if (!g_pendingIconRequests.empty() || !g_pendingMapIconRequests.empty() ||
+        !g_pendingArtRequests.empty()) {
+        return true;
+    }
+    // g_pendingTextRequests is deliberately NOT one of these. This function
+    // exists to make the binary frame path surrender its capture slot, and a
+    // text body is served entirely off an archive walk — it never arms a
+    // capture, so making the video stream skip a frame for one would cost a
+    // frame and buy nothing.
+    // Must also check the heart want-list (Phase 3), not just the item
+    // queue: this function is what makes the binary frame path yield the
+    // capture slot for a tick (see its call site in dualscreen.cpp's
+    // pollAndPushSpikeFrame()) — a heart-only request with nothing in the
+    // item queue would otherwise starve exactly the way item requests did
+    // before that fix, just for hearts this time. Throttled (see
+    // g_heartProbeCounter's doc comment) — this function runs first each
+    // tick, so it computes and caches this tick's probe decision for
+    // take_next_wanted_heart_state() to reuse.
+    g_heartProbeDueThisTick = (++g_heartProbeCounter % kHeartProbeIntervalFrames) == 0;
+    if (!g_heartProbeDueThisTick) {
+        return false;
+    }
+    for (bool wanted : g_wantedHeartStates) {
+        if (wanted) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void request_action(const CompanionAction& action) {
+    std::lock_guard lock{g_actionMutex};
+    if (g_pendingActions.size() >= kMaxPendingActions) {
+        g_pendingActions.pop_front();
+    }
+    g_pendingActions.push_back(action);
+}
+
+bool take_pending_action(CompanionAction& out) {
+    std::lock_guard lock{g_actionMutex};
+    if (g_pendingActions.empty()) {
+        return false;
+    }
+    out = g_pendingActions.front();
+    g_pendingActions.pop_front();
+    return true;
+}
+
+void set_client_owned_pages(uint32_t mask) {
+    g_clientOwnedPages.store(mask);
+}
+
+uint32_t client_owned_pages() {
+    return g_clientOwnedPages.load();
+}
+
+void request_art(uint8_t artKind, int32_t id) {
+    std::lock_guard lock{g_iconRequestMutex};
+    if (g_pendingArtRequests.size() >= kMaxPendingArtRequests) {
+        g_pendingArtRequests.pop_front();
+    }
+    g_pendingArtRequests.push_back({artKind, id});
+}
+
+bool take_pending_art_request(uint8_t& artKind, int32_t& id) {
+    std::lock_guard lock{g_iconRequestMutex};
+    if (g_pendingArtRequests.empty()) {
+        return false;
+    }
+    artKind = g_pendingArtRequests.front().first;
+    id = g_pendingArtRequests.front().second;
+    g_pendingArtRequests.pop_front();
+    return true;
+}
+
+void request_text(uint8_t textKind, int32_t id) {
+    std::lock_guard lock{g_iconRequestMutex};
+    if (g_pendingTextRequests.size() >= kMaxPendingTextRequests) {
+        g_pendingTextRequests.pop_front();
+    }
+    g_pendingTextRequests.push_back({textKind, id});
+}
+
+bool take_pending_text_request(uint8_t& textKind, int32_t& id) {
+    std::lock_guard lock{g_iconRequestMutex};
+    if (g_pendingTextRequests.empty()) {
+        return false;
+    }
+    textKind = g_pendingTextRequests.front().first;
+    id = g_pendingTextRequests.front().second;
+    g_pendingTextRequests.pop_front();
+    return true;
+}
+
+void request_map_icon(uint8_t kind) {
+    std::lock_guard lock{g_iconRequestMutex};
+    if (g_pendingMapIconRequests.size() >= kMaxPendingIconRequests) {
+        g_pendingMapIconRequests.pop_front();
+    }
+    g_pendingMapIconRequests.push_back(kind);
+}
+
+bool take_pending_map_icon_request(uint8_t& kind) {
+    std::lock_guard lock{g_iconRequestMutex};
+    if (g_pendingMapIconRequests.empty()) {
+        return false;
+    }
+    kind = g_pendingMapIconRequests.front();
+    g_pendingMapIconRequests.pop_front();
+    return true;
+}
+
+void request_map_base() {
+    std::lock_guard lock{g_iconRequestMutex};
+    g_mapBaseWanted = true;
+}
+
+bool take_pending_map_base_request() {
+    std::lock_guard lock{g_iconRequestMutex};
+    if (!g_mapBaseWanted) {
+        return false;
+    }
+    g_mapBaseWanted = false;
+    return true;
+}
+
+bool has_pending_map_base_request() {
+    std::lock_guard lock{g_iconRequestMutex};
+    return g_mapBaseWanted;
+}
+
+void request_heart_icon(uint8_t state) {
+    if (state >= 5) {
+        return;
+    }
+    std::lock_guard lock{g_iconRequestMutex};
+    g_wantedHeartStates[state] = true;
+}
+
+bool take_next_wanted_heart_state(uint8_t& state) {
+    std::lock_guard lock{g_iconRequestMutex};
+    // Reuses this tick's cached probe decision from has_pending_icon_request()
+    // (always called first, see above) rather than recomputing/re-incrementing
+    // — both must agree on the same tick.
+    if (!g_heartProbeDueThisTick) {
+        return false;
+    }
+    // Rotating scan, not 0..4 — see g_heartProbeCursor.
+    for (uint8_t n = 0; n < 5; n++) {
+        const uint8_t i = (uint8_t)((g_heartProbeCursor + n) % 5);
+        if (g_wantedHeartStates[i]) {
+            state = i;
+            g_heartProbeCursor = (uint8_t)((i + 1) % 5);
+            return true;
+        }
+    }
+    return false;
+}
+
+void clear_wanted_heart_state(uint8_t state) {
+    if (state >= 5) {
+        return;
+    }
+    std::lock_guard lock{g_iconRequestMutex};
+    g_wantedHeartStates[state] = false;
+}
+
+}  // namespace dusk::phone_spike
+
+#endif  // DUSK_PHONE_SPIKE

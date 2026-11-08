@@ -7,6 +7,20 @@
 
 namespace dusk {
 
+// video.fpsOverlayCorner: 0-3 are screen corners, 4 means the companion
+// screen draws the counter instead. Shared by the settings UI, the RmlUi
+// overlay and the companion dashboard.
+constexpr int kFpsCornerCompanion = 4;
+
+// game.dualScreenHudMode: which HUD split the second screen uses.
+//   Cinematic  - the whole status HUD lives on the companion (original).
+//   Functional - the gameplay-critical HUD MOVES BACK to the main screen and
+//                the companion becomes a control surface (map/items/collect
+//                centred, item buttons right, utility buttons left).
+// Elements never render on both screens; each mode is a partition.
+constexpr int kDualHudCinematic = 0;
+constexpr int kDualHudFunctional = 1;
+
 using config::ConfigVar;
 using config::ActionBindConfigVar;
 
@@ -335,6 +349,28 @@ struct UserSettings {
         ConfigVar<bool> enableTeleportCombo;
 
         ConfigVar<std::string> lastSelectedGameModeId;
+
+
+        // Fork-added settings live at the END of this struct on purpose. Mods are
+        // compiled against upstream's headers, so settings.<group>.<var> bakes in a
+        // byte offset; inserting a member mid-struct silently repoints every later
+        // access in every mod. Dawnlight read a shifted ConfigVar and abort()ed each
+        // frame. Reordering within the struct keeps its size, so siblings are
+        // unaffected -- but only while these stay last. Append here, never above.
+        ConfigVar<bool> dualScreen;
+        ConfigVar<bool> duoAutomaticSplit;
+        ConfigVar<int> dualScreenHudMode;
+        // Companion on the main screen, game on the second.
+        ConfigVar<bool> dualScreenSwap;
+        ConfigVar<int> dualScreenDisplay;
+        ConfigVar<int> dualScreenPosX;
+        ConfigVar<int> dualScreenPosY;
+        ConfigVar<bool> dualScreenHaptics;
+        // Highest one-shot migration already applied to this config file (the
+        // config has no global version field; this counter plays that role).
+        ConfigVar<int> configMigration;
+        // Guide reader (second screen).
+        ConfigVar<bool> guideEnabled;
     } game;
 
     struct {
@@ -358,12 +394,21 @@ struct UserSettings {
         std::array<ActionBindConfigVar, 4> toggleMinimap;
         std::array<ActionBindConfigVar, 4> openDusklightMenu;
         std::array<ActionBindConfigVar, 4> turboSpeedButton;
+        // Slot buttons I/II (item buttons 2/3) — physical-key triggers for
+        // the companion's slot items.
+        std::array<ActionBindConfigVar, 4> useSlotItem1;
+        std::array<ActionBindConfigVar, 4> useSlotItem2;
     } actionBindings;
 };
 
 UserSettings& getSettings();
 
 void registerSettings();
+
+// One-shot config migrations for EXISTING installs, run right after the
+// config file loads: rewrites stored values whose intended default changed
+// (e.g. the dual-screen HUD mode's move to 3DS Style). Each migration runs
+// exactly once per config file, tracked by game.configMigration.
 
 void applyInternalResolutionScale(int scale);
 void applyResampler(Resampler resampler);

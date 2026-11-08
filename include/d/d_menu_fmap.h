@@ -111,6 +111,11 @@ public:
 
 class dMenu_Fmap_c {
 public:
+#if TARGET_PC
+    dMenu_Fmap2DTop_c* getDraw2DTop() { return mpDraw2DTop; }
+    // True while the map is armed in portal-warp mode (the Z toggle).
+    bool isWarpMapMode() const { return mIsWarpMap; }
+#endif
     typedef void (dMenu_Fmap_c::*process)();
 
     dMenu_Fmap_c(JKRExpHeap*, STControl*, CSTControl*, u8, u8, u8, f32, f32, u8);

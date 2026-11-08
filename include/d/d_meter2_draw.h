@@ -159,6 +159,71 @@ public:
         return mButtonZAlpha;
     }
 
+    // Dual-screen: live A/B action labels and cluster visibility, read by the
+    // companion dashboard which renders the button cluster on screen two.
+    const char* getActionTextA();
+    J2DPicture* getButtonBasePicture(int i_which);   // 0 = A, 1 = B, 2 = X, 3 = Y
+    J2DPane* getButtonPane(int i_which);             // 0 = A, 1 = B, 2 = X, 3 = Y
+    J2DPane* getCounterPane(int i_which);            // 0 = rupees, 1 = keys
+    const char* getActionTextB();
+    const char* getActionTextXY(int i_no);
+    J2DPane* getMidnaButtonPaneRaw();
+    J2DPane* getButtonCrossPane();
+    const char* getDpadLabel(int i_no);
+    void drawMidnaPikariAt(f32 i_posX, f32 i_posY);
+    J2DPane* getLightDropPane();
+    J2DPane* getVesselTearPane(int i_idx);
+    void drawVesselPikariForCompanion(const f32* i_tearX, const f32* i_tearY, f32 i_sizeScale);
+    void refreshVesselForCompanion();
+    // Pane count for the vessel save/restore buffers below: the light-drop
+    // parent, the two SI parents and the 16x2 tear pane grid (3 + 32).
+    static const int VESSEL_ALPHA_SAVE_COUNT = 35;
+    // Functional's vessel box: the vessel is LIVE on the main screen there,
+    // so the composite saves alphas AND positions (and the parent's scale),
+    // rewrites the panes to the canonical corner layout
+    // (refreshVesselForCompanion), and restores the live state — including
+    // a mid-flight tear animation on the main screen — right after. An
+    // alpha-only pin was tried first and abandoned: it left the live
+    // positions in the composite, whose union bounds explode while the
+    // main screen animates the vessel (the box looked empty mid-quest).
+    void pushVesselStateForCompanion(f32* o_alpha, f32* o_x, f32* o_y, f32* o_scale);
+    void popVesselStateForCompanion(const f32* i_alpha, const f32* i_x, const f32* i_y,
+        const f32* i_scale);
+    dKantera_icon_c* getKanteraMeter(int i_no);
+    // Whether the oxygen (drowning) meter is live — rides the game's own
+    // fade (mMeterAlphaRate) so the companion bar appears and disappears on
+    // the main screen meter's timing.
+    bool isOxygenActive();
+    // Whether the X (0) / Y (1) item can currently be used (per-frame
+    // snapshot of the use-button bits; see setButtonIconAlpha).
+    bool isItemUsable(int i_xy);
+    void forceCompanionAlpha();
+    bool isButtonClusterVisible();
+    int getHeartPictures(int i_no, J2DPicture** o_pics);
+    // Phone-companion state-streaming (Phase 3): read-only identification of
+    // WHICH visual state heart slot i_no currently shows, mirroring
+    // getHeartPictures()'s own inspection logic exactly but returning a
+    // state index instead of raw pictures, so a caller can tell apart the 5
+    // states getHeartPictures() itself can't distinguish (it just hands
+    // back whichever picture happens to be visible). Returns -1 if the slot
+    // isn't currently a valid/visible heart (i_no out of range, or
+    // i_no >= the current max heart count). Otherwise 0=empty (no fill
+    // layer visible at all), 1/2/3=quarter/half/three-quarter (bigh_01/02/
+    // 03 — heart_quarters, i.e. life%4, used directly as the tag_bigh index
+    // in changeTextureLife()/drawLife()), 4=full — either
+    // mpLifeTexture[i_no][1] is visible, OR bigh_00 is: drawLife()
+    // decrements heart_cnt whenever heart_quarters is 0, so the slot
+    // showing bigh_00 is the last COMPLETE heart drawn through the
+    // quarter-texture path, not an empty one (confirmed visually in live
+    // testing — that capture came back a solid full heart). Never mutates
+    // anything (no show()/hide()/changeTexture() calls) — pure inspection
+    // of state the game's own drawLife()/changeTextureLife() already set
+    // this frame.
+    int getHeartState(int i_no);
+    f32 getLightDropAlpha();
+    void dualScreenSyncPaneVisibility(bool i_dualScreenHud, bool i_mainHudRestored,
+        bool i_lowLifeHearts);
+
     void beginExecution();
     void endExecution();
     bool isExecuting() const { return mExecuting; }

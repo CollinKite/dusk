@@ -10,6 +10,7 @@
 #include "f_op/f_op_msg_mng.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_lib.h"
+#include "dusk/companion.h"
 #include "d/d_menu_fmap2D.h"
 #include "d/d_menu_fmap_map.h"
 #include "d/d_menu_window.h"
@@ -906,7 +907,8 @@ void dMenu_Fmap_c::all_map_proc() {
         if (mErrorSound == true) {
             mErrorSound = false;
         }
-    } else if (dMw_Z_TRIGGER() && mpDraw2DTop->isWarpAccept()) {
+    } else if ((dMw_Z_TRIGGER() || dusk::companion::warpTogglePressed())
+               && mpDraw2DTop->isWarpAccept()) {
             /* dSv_event_flag_c::F_0265 - Arbiter's Grounds - Arbiter's Grounds clear */
         if (dComIfGs_isEventBit(dSv_event_flag_c::saveBitLabels[0x109])
                 /* dSv_event_flag_c::F_0361 - Arbiter's Grounds - Spun the spinning pillars */
@@ -1067,7 +1069,8 @@ void dMenu_Fmap_c::region_map_proc() {
             Z2GetAudioMgr()->seStart(Z2SE_SYS_ERROR, NULL, 0, 0, 1.0f, 1.0f, -1.0f, -1.0f, 0);
             mErrorSound = true;
         }
-    } else if (dMw_Z_TRIGGER() && mpDraw2DTop->isWarpAccept()) {
+    } else if ((dMw_Z_TRIGGER() || dusk::companion::warpTogglePressed())
+               && mpDraw2DTop->isWarpAccept()) {
             /* dSv_event_flag_c::F_0265 - Arbiter's Grounds - Arbiter's Grounds clear */
         if (dComIfGs_isEventBit(dSv_event_flag_c::saveBitLabels[0x109])
                 /* dSv_event_flag_c::F_0361 - Arbiter's Grounds - Spun the spinning pillars */
@@ -1238,7 +1241,9 @@ void dMenu_Fmap_c::portal_warp_map_proc() {
         } else {
             Z2GetAudioMgr()->seStart(Z2SE_SYS_ERROR, NULL, 0, 0, 1.0f, 1.0f, -1.0f, -1.0f, 0);
         }
-    } else if (dMw_Z_TRIGGER()) {
+    } else if (dMw_Z_TRIGGER() || dusk::companion::warpTogglePressed()) {
+        // Turning portals back OFF lives here, in the portal-warp proc —
+        // separate from the three map procs that turn them on.
         mIsWarpMap = false;
         setProcess(PROC_REGION_MAP);
         mpDraw2DTop->setZButtonString(0x529, dMenu_Fmap2DTop_c::ALPHA_DEFAULT);
@@ -1392,7 +1397,8 @@ void dMenu_Fmap_c::spot_map_proc() {
         && dMeter2Info_getMeterClass()->getMeterDrawPtr()->getInsideObjCheck() != 1)
     {
         IF_NOT_DUSK(mpDraw2DBack->stageMapMove(mpStick, 1, true));
-    } else if (dMw_Z_TRIGGER() && mpDraw2DTop->isWarpAccept()) {
+    } else if ((dMw_Z_TRIGGER() || dusk::companion::warpTogglePressed())
+               && mpDraw2DTop->isWarpAccept()) {
 #if TARGET_PC || VERSION >= VERSION_GCN_JPN
         IF_DUSK_BLOCK(dusk::version::isRegionJpn())
         //! JPN version added a check to make sure if Arbiter's Grounds is cleared that

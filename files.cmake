@@ -1444,6 +1444,43 @@ set(DUSK_FILES
         src/dusk/gyro.cpp
         src/dusk/game_combos.cpp
         src/dusk/trigger_viewer.cpp
+        src/dusk/android_aux_display.cpp
+        src/dusk/companion.h
+        src/dusk/companion.cpp
+        src/dusk/companion_internal.h
+        src/dusk/companion_strings.h
+        src/dusk/companion_strings.cpp
+        src/dusk/guide/convert.cpp
+        src/dusk/guide/store.cpp
+        src/dusk/guide/fetch.cpp
+        src/dusk/guide/image.cpp
+        src/dusk/guide/browser.cpp
+        src/dusk/companion_guide.cpp
+        src/dusk/companion_hud.cpp
+        src/dusk/companion_functional.cpp
+        src/dusk/companion_gfx.cpp
+        src/dusk/companion_icons.cpp
+        src/dusk/companion_touch.cpp
+        src/dusk/companion_pages.cpp
+        src/dusk/companion_collect.cpp
+        src/dusk/companion_dmap.cpp
+        src/dusk/companion_state.h
+        src/dusk/companion_state.cpp
+        src/dusk/companion_icon_decode.h
+        src/dusk/companion_icon_decode.cpp
+        src/dusk/companion_map_state.h
+        src/dusk/companion_map_state.cpp
+        src/dusk/companion_collect_state.h
+        src/dusk/companion_collect_state.cpp
+        src/dusk/dualscreen.h
+        src/dusk/dualscreen.cpp
+        src/dusk/phone_spike_sha1.h
+        src/dusk/phone_spike_pad.h
+        src/dusk/phone_spike_pad.cpp
+        src/dusk/phone_spike_pairing.h
+        src/dusk/phone_spike_pairing.cpp
+        src/dusk/phone_spike_ws.h
+        src/dusk/phone_spike_ws.cpp
         #src/dusk/m_Do_ext_dusk.cpp
         src/dusk/hq_minimap.cpp
         src/dusk/imgui/ImGuiActorSpawner.cpp
@@ -1617,6 +1654,8 @@ set(DUSK_FILES
         src/dusk/ui/package_row.hpp
         src/dusk/ui/mod_texture_provider.cpp
         src/dusk/ui/mod_texture_provider.hpp
+        src/dusk/ui/phone_spike_qr_texture.cpp
+        src/dusk/ui/phone_spike_qr_texture.hpp
         src/dusk/ui/remote_texture_provider.cpp
         src/dusk/ui/remote_texture_provider.hpp
         src/dusk/ui/runtime_image.cpp

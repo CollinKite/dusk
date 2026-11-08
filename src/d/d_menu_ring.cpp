@@ -34,6 +34,7 @@
 #include "dusk/interp/user_interface.h"
 #include "dusk/menu_pointer.h"
 #include "dusk/settings.h"
+#include "dusk/dualscreen.h"
 #include "dusk/ui/touch_controls.hpp"
 #include "dusk/version.hpp"
 #endif
@@ -53,6 +54,17 @@ static procFunc stick_proc[] = {
     /* STATUS_EXPLAIN       */ &dMenu_Ring_c::stick_explain_proc,
     /* STATUS_EXPLAIN_FORCE */ &dMenu_Ring_c::stick_explain_force_proc,
 };
+
+#if TARGET_PC
+// Dual-screen: the wheel layout leaves room for the HUD cluster on the
+// right; with the cluster on the companion screen, re-center it. Functional
+// brings the cluster back, so the wheel returns to its vanilla position.
+static f32 ringCenterOffsetX() {
+    return dusk::dualscreen::mainHudActive() ? 0.0f : 52.0f;
+}
+#else
+static f32 ringCenterOffsetX() { return 0.0f; }
+#endif
 
 dMenu_Ring_c::dMenu_Ring_c(JKRExpHeap* i_heap, STControl* i_stick, CSTControl* i_cStick,
                            u8 i_ringOrigin) {
@@ -236,9 +248,14 @@ dMenu_Ring_c::dMenu_Ring_c(JKRExpHeap* i_heap, STControl* i_stick, CSTControl* i
         if (dComIfGs_getSelectItemIndex(1) == dComIfGs_getLineUpItem(i)) {
             mYButtonSlot = i;
         }
+#if !TARGET_PC
+        // Wii: select index 2 is the wolf down-button ability. On PC it is
+        // the companion's slot I (an inventory slot index), which could
+        // false-match an ability id here.
         if (dComIfGs_getSelectItemIndex(2) == dComIfGs_getWolfAbility(i)) {
             field_0x6ac = i;
         }
+#endif
     }
     mRingRadiusH = g_ringHIO.mRingRadiusH;
     mRingRadiusV = g_ringHIO.mRingRadiusV;
@@ -744,7 +761,7 @@ void dMenu_Ring_c::_draw() {
             mpCircle->setAlphaRate(mRingAlpha);
         }
         mpCenterParent->setAlphaRate(mAlphaRate);
-        mpCenterScreen->draw(mCenterPosX, mCenterPosY, grafPort);
+        mpCenterScreen->draw(mCenterPosX + ringCenterOffsetX(), mCenterPosY, grafPort);
         drawItem();
         textScaleHIO();
         f32 alphaRate = mpTextParent[1]->getAlphaRate();
@@ -752,13 +769,15 @@ void dMenu_Ring_c::_draw() {
         if (mStatus == STATUS_EXPLAIN) {
             mpTextParent[1]->setAlphaRate(alphaRate * mAlphaRate);
         }
-        mpScreen->draw(mCenterPosX, mCenterPosY, grafPort);
+        mpScreen->draw(mCenterPosX + ringCenterOffsetX(), mCenterPosY, grafPort);
         if (mStatus != STATUS_EXPLAIN && mPikariFlashingSpeed > 0.0f) {
             Vec pos;
             CPaneMgr paneMgr;
             pos = paneMgr.getGlobalVtxCenter(mpScreen->search(MULTI_CHAR('gr_btn')), true, 0);
+            // Pane globals don't include the screen draw offset — apply the
+            // dual-screen re-center shift so the pulse follows the wheel.
             dMeter2Info_getMeterClass()->getMeterDrawPtr()->drawPikari(
-                pos.x, pos.y, &mPikariFlashingSpeed, g_ringHIO.mPikariScale, g_ringHIO.mPikariFrontOuter,
+                pos.x + ringCenterOffsetX(), pos.y, &mPikariFlashingSpeed, g_ringHIO.mPikariScale, g_ringHIO.mPikariFrontOuter,
                 g_ringHIO.mPikariFrontInner, g_ringHIO.mPikariBackOuter, g_ringHIO.mPikariBackInner,
                 g_ringHIO.mPikariAnimSpeed, 2);
         }
@@ -1004,7 +1023,8 @@ s16 dMenu_Ring_c::calcStickAngle(STControl* i_stick, u8 param_1) {
 }
 
 void dMenu_Ring_c::setRotate() {
-    clacEllipsePlotAverage(mItemsTotal, g_ringHIO.mItemRingPosX + FB_WIDTH_BASE / 2,
+    clacEllipsePlotAverage(mItemsTotal,
+                           g_ringHIO.mItemRingPosX + FB_WIDTH_BASE / 2 + ringCenterOffsetX(),
                            g_ringHIO.mItemRingPosY + FB_HEIGHT_BASE / 2);
     for (int i = 0; i < mItemsTotal; i++) {
         field_0x63e[i] = cM_atan2s(mItemSlotPosX[i] - (FB_WIDTH_BASE / 2 + g_ringHIO.mItemRingPosX),
@@ -1683,8 +1703,8 @@ void dMenu_Ring_c::stick_move_proc() {
             }
             setStatus(field_0x6b2);
         } else {
-            f32 itemRingPosX =
-                g_ringHIO.mItemRingPosX + FB_WIDTH_BASE / 2 + mRingRadiusH * cM_ssin(field_0x66e);
+            f32 itemRingPosX = g_ringHIO.mItemRingPosX + FB_WIDTH_BASE / 2 +
+                               ringCenterOffsetX() + mRingRadiusH * cM_ssin(field_0x66e);
             f32 itemRingPosY =
                 g_ringHIO.mItemRingPosY + FB_HEIGHT_BASE / 2 + mRingRadiusV * cM_scos(field_0x66e);
             mpDrawCursor->setPos(itemRingPosX, itemRingPosY);

@@ -345,7 +345,13 @@ void dSv_player_item_c::setItem(int i_slotNo, u8 i_itemNo) {
         setLineUpItem();
     }
 
-    for (int i = DEFAULT_SELECT_ITEM_INDEX; i < MAX_SELECT_ITEM - 1; i++) {
+#if TARGET_PC
+    // Slots I/II live on select indices 2/3 — refresh the whole set.
+    const int selEnd = MAX_SELECT_ITEM;
+#else
+    const int selEnd = MAX_SELECT_ITEM - 1;
+#endif
+    for (int i = DEFAULT_SELECT_ITEM_INDEX; i < selEnd; i++) {
         if (i_slotNo == dComIfGs_getSelectItemIndex(i)) {
             dComIfGp_setSelectItem(i);
         }
@@ -355,7 +361,12 @@ void dSv_player_item_c::setItem(int i_slotNo, u8 i_itemNo) {
 u8 dSv_player_item_c::getItem(int i_slotNo, bool i_checkCombo) const {
     if (i_slotNo < MAX_ITEM_SLOTS) {
         if (i_checkCombo) {
+#if TARGET_PC
+            // Combos can live on the slot buttons (select indices 2/3) too.
+            for (int i = 0; i < MAX_SELECT_ITEM; i++) {
+#else
             for (int i = 0; i < SELECT_ITEM_NUM; i++) {
+#endif
                 if ((i_slotNo == dComIfGs_getSelectItemIndex(i) || i_slotNo == dComIfGs_getMixItemIndex(i)) &&
                     dComIfGs_getMixItemIndex(i) != dItemNo_NONE_e)
                 {
@@ -1268,20 +1279,69 @@ void dSv_memory_c::init() {
     mBit.init();
 }
 
+#if TARGET_PC
+// Bumped on every change to any stage's visited-room bits. The phone
+// companion streams the dungeon map as a rarely-changing base image plus
+// frequently-changing overlays, and a room becoming (or ceasing to be)
+// visited is one of the few things that genuinely changes that base image:
+// it alters room colours and line widths and gates whether a room is drawn
+// at all. Diffing the bits themselves would mean snapshotting every stage's
+// 8 bytes every frame; a counter at the mutation sites costs nothing.
+//
+// Deliberately covers all three mutators, not just onVisitedRoom: rooms are
+// genuinely un-visited again by the room-bit switch actor (d_a_tag_rmbit_sw
+// calls offVisitedRoom), and init() wipes them on a new file. It still
+// cannot see the two bulk memcpy paths that rewrite an entire dSv_save_c
+// wholesale (save-file load, and the dev state-share import) — those bypass
+// every accessor. The companion tolerates that because those also tear the
+// map renderer down, which bumps a separate generation source it already
+// mixes in.
+static u32 s_visitedRoomGen = 0;
+
+u32 dSv_visitedRoomGeneration() {
+    return s_visitedRoomGen;
+}
+#endif
+
 void dSv_memory2_c::init() {
     for (int i = 0; i < 2; i++) {
         mVisitedRoom[i] = 0;
     }
+#if TARGET_PC
+    s_visitedRoomGen++;
+#endif
 }
 
 void dSv_memory2_c::onVisitedRoom(int i_no) {
     JUT_ASSERT(3279, 0 <= i_no && i_no < 64);
+#if TARGET_PC
+    // Only bump when a bit ACTUALLY changes. This is called on every room
+    // entry, including re-entering somewhere already visited, so bumping
+    // unconditionally made the counter tick constantly while walking around.
+    // The phone companion uses it as part of the map base image's identity,
+    // so a spurious bump throws away a cached image that did not change —
+    // exactly the re-fetching the cache exists to avoid.
+    const u32 before = mVisitedRoom[i_no >> 5];
+#endif
     mVisitedRoom[i_no >> 5] |= 1 << (i_no & 0x1F);
+#if TARGET_PC
+    if (mVisitedRoom[i_no >> 5] != before) {
+        s_visitedRoomGen++;
+    }
+#endif
 }
 
 void dSv_memory2_c::offVisitedRoom(int i_no) {
     JUT_ASSERT(3293, 0 <= i_no && i_no < 64);
+#if TARGET_PC
+    const u32 before = mVisitedRoom[i_no >> 5];
+#endif
     mVisitedRoom[i_no >> 5] &= ~u32(1 << (i_no & 0x1F));
+#if TARGET_PC
+    if (mVisitedRoom[i_no >> 5] != before) {
+        s_visitedRoomGen++;
+    }
+#endif
 }
 
 BOOL dSv_memory2_c::isVisitedRoom(int i_no) {

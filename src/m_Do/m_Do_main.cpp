@@ -1,3 +1,4 @@
+#include "dusk/duo.hpp"
 /**
  * m_Do_main.cpp
  * Main Initialization
@@ -152,6 +153,7 @@ AuroraInfo auroraInfo;
 
 bool launchUILoop() {
     while (dusk::IsRunning && !dusk::IsGameLaunched) {
+        dusk::duo::update();
         const AuroraEvent* event = aurora_update();
         while (event != nullptr && event->type != AURORA_NONE) {
             switch (event->type) {
@@ -234,6 +236,7 @@ void main01(void) {
 
     do {
         // 1. Update Window Events
+        dusk::duo::update();
         const AuroraEvent* event = aurora_update();
         while (true) {
             switch (event->type) {
@@ -668,6 +671,8 @@ int game_main(int argc, char* argv[]) {
     log_build_info();
 
     dusk::config::load_from_user_preferences();
+    // One-shot migrations for configs written by older builds — before the
+    // cvar overrides so an explicit command-line value still wins.
     ApplyCVarOverrides(parsed_arg_options["cvar"]);
     borealis::sentry::Options sentryOptions{
         .release = fmt::format("{}@{}", dusk::AppInfo.appName, BOREALIS_APP_DESCRIBE),

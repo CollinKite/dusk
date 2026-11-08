@@ -173,7 +173,17 @@ UserSettings g_userSettings = {
         .showInputViewerGyro {"game.showInputViewerGyro", false},
         .enableMoveLinkCombo {"game.enableMoveLinkCombo", false},
         .enableTeleportCombo {"game.enableTeleportCombo", false},
-        .lastSelectedGameModeId {"game.lastSelectedGameModeId", gamemode::kVanillaGameModeId}
+        .lastSelectedGameModeId {"game.lastSelectedGameModeId", gamemode::kVanillaGameModeId},
+        .dualScreen {"game.dualScreen", false},
+        .duoAutomaticSplit {"game.duoAutomaticSplit", false},
+        .dualScreenHudMode {"game.dualScreenHudMode", kDualHudFunctional},
+        .dualScreenSwap {"game.dualScreenSwap", false},
+        .dualScreenDisplay {"game.dualScreenDisplay", -1},
+        .dualScreenPosX {"game.dualScreenPosX", -1},
+        .dualScreenPosY {"game.dualScreenPosY", -1},
+        .dualScreenHaptics {"game.dualScreenHaptics", true},
+        .configMigration {"game.configMigration", 0},
+        .guideEnabled {"game.guideEnabled", false},
     },
 
     .backend = {
@@ -226,6 +236,18 @@ UserSettings g_userSettings = {
             ActionBindConfigVar{"actionBindings.turboButton_port1", PAD_NATIVE_BUTTON_INVALID},
             ActionBindConfigVar{"actionBindings.turboButton_port2", PAD_NATIVE_BUTTON_INVALID},
             ActionBindConfigVar{"actionBindings.turboButton_port3", PAD_NATIVE_BUTTON_INVALID},
+        },
+        .useSlotItem1 {
+            ActionBindConfigVar{"actionBindings.useSlotItem1_port0", PAD_NATIVE_BUTTON_INVALID},
+            ActionBindConfigVar{"actionBindings.useSlotItem1_port1", PAD_NATIVE_BUTTON_INVALID},
+            ActionBindConfigVar{"actionBindings.useSlotItem1_port2", PAD_NATIVE_BUTTON_INVALID},
+            ActionBindConfigVar{"actionBindings.useSlotItem1_port3", PAD_NATIVE_BUTTON_INVALID},
+        },
+        .useSlotItem2 {
+            ActionBindConfigVar{"actionBindings.useSlotItem2_port0", PAD_NATIVE_BUTTON_INVALID},
+            ActionBindConfigVar{"actionBindings.useSlotItem2_port1", PAD_NATIVE_BUTTON_INVALID},
+            ActionBindConfigVar{"actionBindings.useSlotItem2_port2", PAD_NATIVE_BUTTON_INVALID},
+            ActionBindConfigVar{"actionBindings.useSlotItem2_port3", PAD_NATIVE_BUTTON_INVALID},
         },
     }
 };
@@ -312,6 +334,16 @@ void registerSettings() {
     Register(g_userSettings.game.touchCameraYSensitivity);
     Register(g_userSettings.game.minimalHUD);
     Register(g_userSettings.game.hudScale);
+    Register(g_userSettings.game.dualScreen);
+    Register(g_userSettings.game.duoAutomaticSplit);
+    Register(g_userSettings.game.dualScreenHudMode);
+    Register(g_userSettings.game.dualScreenSwap);
+    Register(g_userSettings.game.guideEnabled);
+    Register(g_userSettings.game.dualScreenDisplay);
+    Register(g_userSettings.game.dualScreenPosX);
+    Register(g_userSettings.game.dualScreenPosY);
+    Register(g_userSettings.game.dualScreenHaptics);
+    Register(g_userSettings.game.configMigration);
     Register(g_userSettings.game.pauseOnFocusLost,
         [](const bool& value, const bool&) { aurora_set_pause_on_focus_lost(value); });
     Register(g_userSettings.game.enableDiscordPresence);
@@ -434,6 +466,14 @@ void registerSettings() {
     Register(g_userSettings.actionBindings.turboSpeedButton[1]);
     Register(g_userSettings.actionBindings.turboSpeedButton[2]);
     Register(g_userSettings.actionBindings.turboSpeedButton[3]);
+    Register(g_userSettings.actionBindings.useSlotItem1[0]);
+    Register(g_userSettings.actionBindings.useSlotItem1[1]);
+    Register(g_userSettings.actionBindings.useSlotItem1[2]);
+    Register(g_userSettings.actionBindings.useSlotItem1[3]);
+    Register(g_userSettings.actionBindings.useSlotItem2[0]);
+    Register(g_userSettings.actionBindings.useSlotItem2[1]);
+    Register(g_userSettings.actionBindings.useSlotItem2[2]);
+    Register(g_userSettings.actionBindings.useSlotItem2[3]);
 }
 
 // Transient settings

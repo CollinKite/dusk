@@ -95,6 +95,7 @@ borealis::data::Manager& manager() {
                     .directories =
                         {
                             "texture_replacements",
+                            "guides",
                             "USA",
                             "EUR",
                             "JAP",

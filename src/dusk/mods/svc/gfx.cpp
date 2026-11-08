@@ -249,6 +249,10 @@ void draw_trampoline(const aurora::gfx::DrawContext& ctx, const wgpu::RenderPass
             ctx.layout.colorAttachments[GFX_SCENE_COLOR_ATTACHMENT_INDEX].format),
         .depth_format = static_cast<WGPUTextureFormat>(ctx.layout.depthStencilFormat),
         .sample_count = ctx.layout.sampleCount,
+        // Deprecated flat fields, kept populated for mods built against the
+        // older ABI — see layout below for the current shape.
+        .target_width = ctx.layout.colorAttachments[GFX_SCENE_COLOR_ATTACHMENT_INDEX].width,
+        .target_height = ctx.layout.colorAttachments[GFX_SCENE_COLOR_ATTACHMENT_INDEX].height,
         .uses_reversed_z = aurora::gfx::uses_reversed_z(),
         .layout = gfx_render_target_layout(ctx.layout),
     };

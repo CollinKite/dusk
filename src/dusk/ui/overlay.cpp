@@ -9,6 +9,7 @@
 #include "dusk/livesplit.h"
 #include "dusk/mod_loader.hpp"
 #include "dusk/settings.h"
+#include "dusk/dualscreen.h"
 #include "dusk/speedrun.h"
 
 #include "m_Do/m_Do_main.h"
@@ -66,6 +67,8 @@ constexpr auto kMenuNotificationDuration = std::chrono::milliseconds(2500);
 constexpr auto kPipelineProgressOpenDelay = std::chrono::milliseconds(250);
 
 constexpr std::array<const char*, 4> kFpsCorners = {"tl", "tr", "bl", "br"};
+// The stylesheet anchors 'b*' corners with `bottom`, 't*' with `top`.
+constexpr bool fpsCornerIsBottom(int idx) { return kFpsCorners[idx][0] == 'b'; }
 
 Rml::Element* create_toast(Rml::Element* parent, const Toast& toast) {
     if (toast.type == "autosave") {
@@ -274,23 +277,38 @@ void Overlay::update() {
     }
 
     if (mFpsCounter != nullptr) {
-        if (getSettings().video.enableFpsOverlay.getValue()) {
-            const int idx = getSettings().video.fpsOverlayCorner.getValue();
+        const int cornerIdx = getSettings().video.fpsOverlayCorner.getValue();
+        // Index 4 = Companion: the second screen draws the counter instead.
+        // "Companion" only takes the counter away when a companion is really
+        // there; otherwise fall back to a screen corner rather than hiding it
+        // with no way for the user to get it back.
+        const bool drawnOnCompanion = cornerIdx == dusk::kFpsCornerCompanion &&
+            dusk::dualscreen::hudOnCompanion();
+        if (getSettings().video.enableFpsOverlay.getValue() && !drawnOnCompanion) {
+            const int idx = cornerIdx >= 0 &&
+                    cornerIdx < static_cast<int>(kFpsCorners.size())
+                ? cornerIdx : 0;
             mFpsCounter->SetAttribute("open", "");
             mFpsCounter->RemoveProperty(Rml::PropertyId::Bottom);
             mFpsCounter->SetAttribute("corner", kFpsCorners[idx]);
 
-            if (idx == 2) {
-                if (mPipelineProgress && mPipelineProgress->GetAttribute("open")) {
-                    // 12 (height of pipeline box off bottom) + height of pipeline box + 3 (padding
-                    // space)
-                    mFpsCounter->SetProperty(Rml::PropertyId::Bottom,
-                        Rml::Property(15 + mPipelineProgress->GetOffsetHeight(), Rml::Unit::PX));
-                } else {
-                    // Return fps counter to default height off the bottom
-                    mFpsCounter->SetProperty(
-                        Rml::PropertyId::Bottom, Rml::Property(12, Rml::Unit::PX));
+            // Only the bottom-anchored corners get an inline bottom offset.
+            // Setting it for the top corners too left the element anchored at
+            // both top and bottom, so its box stretched the full height of the
+            // screen instead of hugging the label.
+            if (fpsCornerIsBottom(idx)) {
+                if (idx == 2 && mPipelineProgress && mPipelineProgress->GetAttribute("open")) {
+                    // 12 (height of pipeline box off bottom) + height of pipeline box + 3 (padding space)
+                    mFpsCounter->SetProperty(Rml::PropertyId::Bottom, Rml::Property(15 + mPipelineProgress->GetOffsetHeight(), Rml::Unit::PX));
                 }
+                else {
+                    // Return fps counter to default height off the bottom
+                    mFpsCounter->SetProperty(Rml::PropertyId::Bottom, Rml::Property(12, Rml::Unit::PX));
+                }
+            }
+            else {
+                // Top corners: let the stylesheet's `top` rule stand alone.
+                mFpsCounter->RemoveProperty(Rml::PropertyId::Bottom);
             }
 
             const Uint64 perfFreq = SDL_GetPerformanceFrequency();
@@ -476,7 +494,6 @@ void Overlay::update_pipeline_progress() {
     {
         return;
     }
-
     const auto* stats = aurora_get_stats();
     const uint32_t queuedPipelines = stats != nullptr ? stats->queuedPipelines : 0;
     if (queuedPipelines == 0) {

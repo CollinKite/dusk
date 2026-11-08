@@ -1,5 +1,17 @@
 #include "f_ap/f_ap_game.h"
 #include "SSystem/SComponent/c_counter.h"
+#include "d/actor/d_a_alink.h"
+#include "d/actor/d_a_grass.h"
+#include "d/actor/d_a_midna.h"
+#include "d/d_meter2_info.h"
+#include "d/d_model.h"
+#include "d/d_tresure.h"
+#include "dusk/achievements.h"
+#include "dusk/companion.h"
+#include "dusk/interp/frame_interpolation.h"
+#include "dusk/livesplit.h"
+#include "dusk/logging.h"
+#include "dusk/mod_loader.hpp"
 #include "f_op/f_op_camera_mng.h"
 #include "f_op/f_op_draw_tag.h"
 #include "f_op/f_op_overlap_mng.h"
@@ -746,6 +758,9 @@ static void fapGm_AfterRecord() {
 DUSK_GAME_DATA BOOL isRecording = false;
 
 static void duskExecute() {
+    // Latch companion taps that the game's own menus read later this
+    // frame (fpcM_Management runs after us).
+    dusk::companion::beginFrameCompanionInput();
     dusk::menu_pointer::begin_game_frame();
     dusk::input::handleGamepadColor();
     updateAutoSave();
@@ -762,6 +777,49 @@ static void duskExecute() {
     } else {
         Z2GetSoundMgr()->getSeqMgr()->getParams()->moveVolume(1.0f, 0);
         Z2GetSoundMgr()->getStreamMgr()->getParams()->moveVolume(1.0f, 0);
+        isRecording = false;
+    }
+
+    if (mDoCPd_c::getHoldR(PAD_1) && mDoCPd_c::getTrigX(PAD_1)) {
+        if (const auto link = g_dComIfG_gameInfo.play.getPlayer(0)) {
+            dynamic_cast<daAlink_c*>(link)->handleWolfHowl();
+        }
+    }
+
+    if ((mDoCPd_c::getHold(PAD_1) & (PAD_TRIGGER_R | PAD_TRIGGER_L)) == PAD_TRIGGER_R && mDoCPd_c::getTrigY(PAD_1)) {
+        if (const auto link = g_dComIfG_gameInfo.play.getPlayer(0)) {
+            dynamic_cast<daAlink_c*>(link)->handleQuickTransform();
+        }
+    }
+
+    // Companion-screen transform button: same quick-transform machinery, but
+    // without the enableQuickTransform cheat gate (the button has its own
+    // visibility rules and only appears once the ability is unlocked).
+    if (dusk::companion::consumeTransformRequest()) {
+        if (const auto link = g_dComIfG_gameInfo.play.getPlayer(0)) {
+            dynamic_cast<daAlink_c*>(link)->tryQuickTransform();
+        }
+    }
+
+    // Companion-screen warp button: open the field map already armed in
+    // portal-warp mode. dMw_c's key_wait_proc runs later this frame (inside
+    // fpcM_Management) and picks the status up immediately; it also rejects
+    // the request harmlessly during fades, events and heap locks.
+    if (dusk::companion::consumeWarpRequest()) {
+        // dMeter2Info map status 3 = open the field map already armed in
+        // portal-warp mode (dMenu_Fmap_c's ctor reads it, d_menu_fmap.cpp:220).
+        constexpr u8 MAP_STATUS_FIELD_MAP_WARP = 3;
+        dMeter2Info_setMapStatus(MAP_STATUS_FIELD_MAP_WARP);
+    }
+
+    // Sounds requested by last frame's companion touch pass — started here
+    // rather than in the painter pass that queued them.
+    dusk::companion::flushQueuedSounds();
+
+    if (dusk::getSettings().game.moonJump && (mDoCPd_c::getHoldR(PAD_1) && mDoCPd_c::getHoldA(PAD_1))) {
+        if (const auto link = g_dComIfG_gameInfo.play.getPlayer(0)) {
+            link->speed.y = 56.0f;
+        }
     }
 
     if (dusk::getSettings().game.fastSpinner && mDoCPd_c::getHoldR(PAD_1)) {

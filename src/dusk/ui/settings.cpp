@@ -1,7 +1,15 @@
+#include <SDL3/SDL_platform_defines.h>
 #include "settings.hpp"
 
 #include "bool_button.hpp"
 #include "controller_config.hpp"
+#include "dusk/dualscreen.h"
+#include <SDL3/SDL_misc.h>
+
+#include "dusk/guide/browser.hpp"
+#include "dusk/guide/fetch.hpp"
+#include "dusk/guide/store.hpp"
+#include "dusk/io.hpp"
 #include "graphics_tuner.hpp"
 #include "menu_bar.hpp"
 #include "modal.hpp"
@@ -24,6 +32,9 @@
 #include "dusk/livesplit.h"
 #include "dusk/presentation.hpp"
 #include "dusk/speedrun.h"
+#if DUSK_PHONE_SPIKE
+#include "dusk/phone_spike_pairing.h"
+#endif
 
 #include <aurora/gfx.h>
 #include <aurora/lib/window.hpp>
@@ -52,6 +63,13 @@
 namespace dusk::ui {
 namespace {
 
+// Last outcome of a guide download/import, shown under the buttons. File-local
+// because the settings pane is rebuilt on every open and must not lose it.
+std::string sGuideStatus;
+// Cached guide count; -1 means "re-read the index". Never read the index from
+// a per-frame callback without this.
+int sGuideCount = -1;
+
 constexpr std::array kCardFileTypes = {
     "Card Image",
     "GCI Folder",
@@ -62,9 +80,49 @@ constexpr std::array kFpsOverlayCornerNames = {
     "Top Right",
     "Bottom Left",
     "Bottom Right",
+    "Companion",
 };
 
 constexpr std::array kAspectRatioModes = {"Fill Screen", "4:3", "16:9"};
+// Indexed by dusk::kDualHudCinematic / kDualHudFunctional. User-facing names
+// lean on familiar Nintendo layouts: "Wii U Style" = whole HUD off-loaded to
+// the second screen (Wind Waker HD off-TV look), "3DS Style" = vital HUD on
+// the main screen with a touch inventory/map below (OoT 3D layout).
+constexpr std::array kDualScreenHudModeNames = {
+#ifdef SDL_PLATFORM_IOS
+    "Full HUD",
+    "Map + Items",
+#else
+    "Wii U Style",
+    "3DS Style",
+#endif
+};
+
+// Shared by every dual-screen button: turning the feature on points the FPS
+// counter at the companion and clears Minimal HUD; turning it off hands the
+// counter back. Callers invoke this only on an Off <-> On transition —
+// switching between modes leaves both settings alone, so a counter the user
+// re-homed afterwards is not yanked back. The caller saves the config.
+void applyDualScreenSideEffects(bool enabled) {
+    auto& corner = getSettings().video.fpsOverlayCorner;
+    auto& minimal = getSettings().game.minimalHUD;
+    // Only when a second display actually exists — on a single-screen device
+    // the setting is inert, and pointing the counter at a companion that never
+    // draws would simply hide it.
+    if (enabled && dusk::dualscreen::hudOnCompanion()) {
+        if (corner.getValue() != dusk::kFpsCornerCompanion) {
+            corner.setValue(dusk::kFpsCornerCompanion);
+        }
+        if (minimal.getValue()) {
+            minimal.setValue(false);
+        }
+    } else if (!enabled && corner.getValue() == dusk::kFpsCornerCompanion) {
+        // Explicit main corner, NOT getDefaultValue(): the default itself is
+        // Companion now, which would leave this hand-back a no-op.
+        corner.setValue(0);
+    }
+}
+
 
 constexpr std::array kInterpolationModes = {
     "Off",
@@ -781,7 +839,7 @@ SettingsWindow::SettingsWindow(bool prelaunch) : mPrelaunch(prelaunch) {
                         });
                 }
                 pane.add_rml(
-                    "<br/>Display the current framerate in a corner of the screen while playing.");
+                    "<br/>Display the current framerate in a corner of the screen while playing. Companion shows it on the second screen next to the battery.");
             });
         config_bool_select(leftPane, rightPane, getSettings().video.rememberWindowSize,
             {
@@ -1242,6 +1300,228 @@ SettingsWindow::SettingsWindow(bool prelaunch) : mPrelaunch(prelaunch) {
             "Scales the size of the gameplay HUD (hearts, buttons, mini-map, etc.). Does not affect dialog boxes or menus.",
             50, 200, 5,
             [] { return getSettings().game.minimalHUD.getValue(); });
+#ifndef SDL_PLATFORM_IOS
+        leftPane.register_control(
+            leftPane.add_select_button({
+                .key = "Guide Reader",
+                .getValue =
+                    [] {
+                        // Also the poll point for the background download.
+                        // There is no frame hook in the settings pane, and
+                        // getValue IS called every frame while the row is
+                        // visible, so draining the task here is what keeps the
+                        // status line live without inventing a second loop.
+                        static unsigned sSeenImportGen = 0;
+                        const unsigned gen = dusk::guide::import_generation();
+                        if (gen != sSeenImportGen) {
+                            sSeenImportGen = gen;
+                            const int imported = dusk::guide::last_import_count();
+                            sGuideCount = -1;
+                            sGuideStatus = imported == 0
+                                ? "No new pages found in guides/import."
+                                : fmt::format("Imported {} page(s).", imported);
+                        }
+                        if (!getSettings().game.guideEnabled.getValue()) {
+                            return Rml::String{"Off"};
+                        }
+                        // Count is cached: getValue runs EVERY frame the row
+                        // is visible, and load_index() parses JSON off disk.
+                        // Only the actions that can change it invalidate it.
+                        if (sGuideCount < 0) {
+                            sGuideCount = (int)dusk::guide::load_index().entries.size();
+                        }
+                        return sGuideCount == 0
+                            ? Rml::String{"On (no guides)"}
+                            : Rml::String{fmt::format("On ({} saved)", sGuideCount)};
+                    },
+                .isModified = [] { return false; },
+            }),
+            rightPane, [](Pane& pane) {
+                pane.clear();
+                pane.add_text(
+                    "Reads a walkthrough on the second screen. Swipe out the "
+                    "left pane and tap the Guide icon; the HUD and the item "
+                    "buttons keep working while it is up.");
+                pane.add_button({.text = "On",
+                                    .isSelected = [] {
+                                        return getSettings().game.guideEnabled.getValue();
+                                    }})
+                    .on_pressed([] {
+                        mDoAud_seStartMenu(kSoundItemChange);
+                        getSettings().game.guideEnabled.setValue(true);
+                        config::save();
+                    });
+                pane.add_button({.text = "Off",
+                                    .isSelected = [] {
+                                        return !getSettings().game.guideEnabled.getValue();
+                                    }})
+                    .on_pressed([] {
+                        mDoAud_seStartMenu(kSoundItemChange);
+                        getSettings().game.guideEnabled.setValue(false);
+                        config::save();
+                    });
+
+                // The primary path. A WebView is a real browser, so the sites
+                // that answer a plain HTTP client with 403 serve it normally —
+                // and the user never has to find a folder or move a file.
+                if (dusk::guide::browser_available()) {
+                    pane.add_rml("<br/><b>Save a guide from the web</b> — opens "
+                                 "zeldadungeon.net, then press <b>Save whole guide</b>. "
+                                 "It downloads every chapter for offline reading.");
+                    pane.add_button("Save from zeldadungeon.net").on_pressed([] {
+                        mDoAud_seStartMenu(kSoundClick);
+                        if (!dusk::guide::open_browser(dusk::guide::kDefaultGuideUrl)) {
+                            sGuideStatus = "Could not open the browser.";
+                        }
+                    });
+                }
+                // Deliberately just this. A URL field, a direct download and a
+                // manual import folder all existed here and all were removed:
+                // none of them work against the site this is built around,
+                // which answers a plain HTTP client with 403. The browser is
+                // the only thing that can read it, so it is the only offer.
+                if (!sGuideStatus.empty()) {
+                    pane.add_rml("<br/>" + sGuideStatus);
+                }
+            });
+
+#endif
+#ifdef SDL_PLATFORM_IOS
+        config_bool_select(leftPane, rightPane, getSettings().game.duoAutomaticSplit,
+            {.key = "Automatic Fold Split",
+             .helpText = "When enabled, the companion appears in portrait only while the hinge is partially open. "
+                         "Turn this off to keep the split view while fully unfolded in portrait. "
+                         "Enable a Companion Screen mode below. Landscape and folded-closed views keep the whole game."});
+#endif
+        leftPane.register_control(
+            leftPane.add_select_button({
+                // Short key: the row prints the key on the left and the live
+                // value on the right, and "Wii U Style" needs the room.
+#ifdef SDL_PLATFORM_IOS
+                .key = "Companion Screen",
+#else
+                .key = "Dual Screen HUD",
+#endif
+                .getValue =
+                    [] {
+                        if (!getSettings().game.dualScreen.getValue()) {
+                            return Rml::String{"Off"};
+                        }
+                        int idx = getSettings().game.dualScreenHudMode.getValue();
+                        if (idx < 0 || idx >= static_cast<int>(kDualScreenHudModeNames.size())) {
+                            idx = dusk::kDualHudFunctional;
+                        }
+                        return Rml::String{kDualScreenHudModeNames[idx]};
+                    },
+                // Never dot-marked as "modified": dual-screen defaults to Off,
+                // so the marker would sit there for every dual-screen player
+                // forever — it reads as a mystery bullet, not as information.
+                .isModified = [] { return false; },
+            }),
+            rightPane, [](Pane& pane) {
+                pane.add_button(
+                        {
+                            .text = "Off",
+                            .isSelected = [] { return !getSettings().game.dualScreen.getValue(); },
+                        })
+                    .on_pressed([] {
+                        mDoAud_seStartMenu(kSoundItemChange);
+                        getSettings().game.dualScreen.setValue(false);
+                        applyDualScreenSideEffects(false);
+                        config::save();
+                    });
+                for (int i = 0; i < static_cast<int>(kDualScreenHudModeNames.size()); ++i) {
+                    pane.add_button(
+                            {
+                                .text = kDualScreenHudModeNames[i],
+                                .isSelected =
+                                    [i] {
+                                        return getSettings().game.dualScreen.getValue() &&
+                                               getSettings().game.dualScreenHudMode.getValue() == i;
+                                    },
+                            })
+                        .on_pressed([i] {
+                            mDoAud_seStartMenu(kSoundItemChange);
+                            const bool wasOn = getSettings().game.dualScreen.getValue();
+                            getSettings().game.dualScreen.setValue(true);
+                            getSettings().game.dualScreenHudMode.setValue(i);
+                            // Only on the Off -> On edge: a plain mode switch
+                            // must not re-force the FPS corner or Minimal HUD
+                            // the user may have re-adjusted since enabling.
+                            if (!wasOn) {
+                                applyDualScreenSideEffects(true);
+                            }
+                            config::save();
+                        });
+                }
+#ifdef SDL_PLATFORM_IOS
+                pane.add_rml("<br/>In portrait, the game appears above the fold and a touch map and inventory below. "
+                    "Map + Items keeps essential HUD controls with the game; Full HUD moves them to the companion. "
+                    "Tap the lower tabs to switch pages. Drag an inventory item onto an item slot to equip it. "
+                    "Select Off to restore the whole game window.");
+#else
+                pane.add_rml(
+                    "<br/>Shows the HUD, map and menus on a second screen. "
+                    "Wii U Style moves the whole HUD there, leaving the game view clear. "
+                    "3DS Style keeps hearts, A/B/Z and the d-pad on the main screen and "
+                    "makes the second screen a touch control surface."
+                    "<br/>Enabling moves the FPS counter to the companion screen and turns "
+                    "off Minimal HUD.");
+#endif
+            });
+
+        // Directly below the style row, and only while the second screen is in
+        // use — with no second panel there is nowhere for the game to go.
+        //
+        // Android only: the swap is done by launching the game's window onto the
+        // other display, which is why it needs a restart and why there is no
+        // desktop equivalent to offer.
+#if defined(TARGET_ANDROID) || defined(__ANDROID__) || defined(ANDROID)
+        if (dusk::dualscreen::hudOnCompanion()) {
+            config_bool_select(leftPane, rightPane, getSettings().game.dualScreenSwap,
+                {
+                    .key = "Swap Screens",
+                    .helpText =
+                        "Puts the game on the second screen and the companion on the main "
+                        "screen.<br/>Takes effect once Dusklight has been closed and opened "
+                        "again — close it from the recent apps list. The game's window has "
+                        "to be created on the other screen, and a window that is already "
+                        "showing cannot be moved.",
+                    // Written out now rather than at exit: the launcher reads
+                    // this file on the next start, and the app can be killed
+                    // from the task switcher without ever running shutdown.
+                    .onChange = [](bool value) { dusk::dualscreen::publishSwapPreference(value); },
+                });
+        }
+#endif
+
+#if DUSK_PHONE_SPIKE && !defined(TARGET_ANDROID) && !defined(__ANDROID__) && !defined(ANDROID)
+        // Phone-companion spike (see docs/phone-companion-design.md) —
+        // same placement rule as Swap Screens above: only while the second
+        // screen is actually in use. Not Android: the spike's frame push
+        // needs a hidden desktop SDL window (aurora::auxwin::create with
+        // CreateInfo::hidden), and Android allows exactly one window,
+        // already the game's own — there is no offscreen render path there
+        // yet, so this would just be a QR code that can never connect.
+        if (dusk::dualscreen::hudOnCompanion()) {
+            leftPane.register_control(
+                leftPane.add_select_button({
+                    .key = "Pair a Phone",
+                    .getValue = [] { return Rml::String{"Scan to connect"}; },
+                    .isModified = [] { return false; },
+                }),
+                rightPane, [](Pane& pane) {
+                    pane.add_rml(
+                        "<img src=\"duskqr://pairing\" style=\"width:180px;height:180px;\"/>"
+                        "<br/>" +
+                        dusk::phone_spike::current_pairing_url() +
+                        "<br/>Scan with a phone on the same Wi-Fi to use it as a second "
+                        "screen. A gamepad connected to that phone also works as a second "
+                        "controller for the game — the phone's own touchscreen only "
+                        "controls the companion display, never the game.");
+                });
+        }
+#endif
         addOption("Restore Wii 1.0 Glitches", getSettings().game.restoreWiiGlitches,
             "Restores patched glitches from Wii USA 1.0, the first released version.");
         addOption("Enable Rotating Link Doll", getSettings().game.enableLinkDollRotation,

@@ -1373,6 +1373,28 @@ public:
         PROC_MAX,
     };
 
+#if TARGET_PC
+    // PC: four ITEM buttons — X, Y and the companion's two slot buttons
+    // occupy bits 0-3, so itemTrigger()/itemButton() (1 << mSelectItemId)
+    // extend to select-item indices 2/3 with no remapping. The remaining
+    // buttons shift up; the mask fields and check params are u16 for BTN_R.
+    // Every reader is symbolic (verified: no raw masks or switches), so the
+    // renumbering is transparent.
+    enum daAlink_ITEM_BTN {
+        /* 0x001 */ BTN_X = (1 << 0),
+        /* 0x002 */ BTN_Y = (1 << 1),
+        /* 0x004 */ BTN_S1 = (1 << 2),
+        /* 0x008 */ BTN_S2 = (1 << 3),
+        /* 0x010 */ BTN_Z = (1 << 4),
+        /* 0x020 */ BTN_B = (1 << 5),
+        /* 0x040 */ BTN_A = (1 << 6),
+        /* 0x080 */ BTN_L = (1 << 7),
+        /* 0x100 */ BTN_R = (1 << 8),
+    };
+    // Item-select buttons Link polls (X, Y + slots I/II); doubles as
+    // checkItemSetButton's "bound to no button" sentinel.
+    static const int ITEM_BTN_COUNT = 4;
+#else
     enum daAlink_ITEM_BTN {
         /* 0x01 */ BTN_X = (1 << 0),
         /* 0x02 */ BTN_Y = (1 << 1),
@@ -1382,6 +1404,8 @@ public:
         /* 0x20 */ BTN_L = (1 << 5),
         /* 0x40 */ BTN_R = (1 << 6),
     };
+    static const int ITEM_BTN_COUNT = 2;
+#endif
 
     /**
      * Moving direction calculated from an angle
@@ -1584,8 +1608,8 @@ public:
     bool checkLv2MiddleBossBgRide(s16 i_procName);
     bool getSlidePolygon(cM3dGPla* o_tripla);
     BOOL checkSlope() const;
-    BOOL itemTriggerCheck(u8 i_btnFlag);
-    BOOL itemButtonCheck(u8 i_btnFlag);
+    BOOL itemTriggerCheck(u16 i_btnFlag);
+    BOOL itemButtonCheck(u16 i_btnFlag);
     BOOL itemButton();
     BOOL itemTrigger();
     BOOL spActionButton();
@@ -4129,8 +4153,21 @@ public:
     /* 0x02F5C */ LIGHT_INFLUENCE mMagneBootsPlight;
     /* 0x02F7C */ u8 field_0x2f7c[16];
     /* 0x02F8C */ u8 field_0x2f8c;
+#if TARGET_PC
+    // These stay u8 at their upstream offsets. They were once widened in place
+    // for the four-item-button bit space, on the assumption that "the port
+    // compiles everything from source, so only symbolic access exists" -- which
+    // is true of this repo but NOT of third-party native mods. Those are
+    // compiled separately against upstream's headers and bake in absolute
+    // offsets, so shifting everything after 0x2F8D made them read the wrong
+    // field and abort. The wide values now live at the end of the class; see
+    // mItemTrigger there.
+    /* 0x02F8D */ u8 field_0x2f8d;
+    /* 0x02F8E */ u8 field_0x2f8e;
+#else
     /* 0x02F8D */ u8 mItemTrigger;
     /* 0x02F8E */ u8 mItemButton;
+#endif
     /* 0x02F8F */ u8 field_0x2f8f;
     /* 0x02F90 */ u8 field_0x2f90;
     /* 0x02F91 */ u8 field_0x2f91;
@@ -4162,7 +4199,11 @@ public:
     /* 0x02FAB */ u8 field_0x2fab;
     /* 0x02FAC */ u8 mExitDirection;
     /* 0x02FAD */ u8 mPeepExitID;
+#if TARGET_PC
+    /* 0x02FAE */ u8 field_0x2fae;  // upstream mUseButtonFlags; see end of class
+#else
     /* 0x02FAE */ u8 mUseButtonFlags;
+#endif
     /* 0x02FAF */ u8 field_0x2faf;
     /* 0x02FB0 */ u8 field_0x2fb0;
     /* 0x02FB1 */ u8 mWolfLockNum;
@@ -4557,10 +4598,25 @@ public:
 #if TARGET_PC
     void handleWolfHowl();
     void handleQuickTransform();
+    // Quick-transform availability, side-effect free (no sound, no pad
+    // writes) — shared by the hotkey path and the companion's transform
+    // button, which also polls it every frame for the dimmed state.
+    bool checkQuickTransformOK();
+    // Transform now if allowed, error beep otherwise. Game-thread frame
+    // context only (procCoMetamorphoseInit must never run in a draw pass).
+    void tryQuickTransform();
     bool checkAimContext();
     bool checkAimInputContext();
 
     bool mIsRollstab = false;
+
+    // Four item buttons (X, Y and the companion's slots I/II) push BTN_R out to
+    // 1 << 8, so these masks need 16 bits. They are appended here rather than
+    // widened in place to preserve the earlier member offsets. This still
+    // changes the game ABI; native game mods must use this branch's SDK epoch.
+    u16 mItemTrigger = 0;
+    u16 mItemButton = 0;
+    u16 mUseButtonFlags = 0;
 #endif
 };  // Size: 0x385C
 
