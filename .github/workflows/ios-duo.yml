@@ -1,0 +1,70 @@
+name: iPhone Duo
+
+on:
+  push:
+    branches: [feature/ios-duo-companion]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-duo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install build tools
+        run: |
+          brew install cmake ninja
+          rustup toolchain install stable --profile minimal --target aarch64-apple-ios
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Check layout and dependency patch
+        run: |
+          xcrun clang++ -std=c++20 -Isrc tests/duo_layout.cpp -o "$RUNNER_TEMP/duo-layout-test"
+          "$RUNNER_TEMP/duo-layout-test"
+          python3 ci/check-aurora-duo-patch.py
+
+      - name: Configure
+        run: |
+          cmake --preset ios-duo -B build/ios-duo \
+            -DRust_TOOLCHAIN=stable \
+            -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/build/ios-duo/install" \
+            '-DCMAKE_C_FLAGS_RELWITHDEBINFO=-O2 -gline-tables-only -DNDEBUG' \
+            '-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O2 -gline-tables-only -DNDEBUG'
+
+      - name: Build and prepatch native mods
+        run: cmake --build build/ios-duo --target install --parallel 6
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p build/duo-package/Payload build/duo-artifacts
+          ditto build/ios-duo/install/Dusklight.app build/duo-package/Payload/Dusklight.app
+          ditto -c -k --norsrc --keepParent build/duo-package/Payload \
+            "build/duo-artifacts/Dusklight-Duo-${GITHUB_SHA:0:8}-unsigned.ipa"
+          unzip -tq build/duo-artifacts/*.ipa
+          git rev-parse HEAD > build/duo-artifacts/BUILD_INFO.txt
+          git submodule status >> build/duo-artifacts/BUILD_INFO.txt
+          cp docs/ios-duo.md build/duo-artifacts/README.md
+          shasum -a 256 build/duo-artifacts/*.ipa > build/duo-artifacts/SHA256SUMS
+
+      - name: Upload IPA and matching mod SDK
+        uses: actions/upload-artifact@v7
+        with:
+          name: dusklight-iphone-duo-${{ github.sha }}
+          path: |
+            build/duo-artifacts/
+            build/ios-duo/install/sdk/
+          if-no-files-found: error
